@@ -295,6 +295,7 @@ data: {
 | `trading.broker.command.v1`  | Order Service / Recovery Service | Broker Gateway                   | `SubmitOrderCommand`, `CancelOrderCommand`, `QueryOrderStatusCommand`                                                                    |
 | `trading.broker.event.v1`    | Broker Gateway                   | Order Service                    | `BrokerOrderAcknowledged`, `BrokerOrderFilled`, `BrokerCommandOutcomeUnknown`, `BrokerOrderStatusSnapshot` 등                             |
 | `trading.order.lifecycle.v1` | Order Service                    | Recovery Service / Observability | `OrderStatusChanged`, `OrderBecameUnknown`, `OrderReconciliationRequested`, `OrderReconciliationResolved`, `OrderReconciliationFailed` 등 |
+| `trading.recovery.event.v1` | Recovery Service | Order Service | `ReconciliationJobFailed` |
 
 ## 10.6.2 Topic Naming 기준
 
@@ -310,6 +311,7 @@ trading.<domain>.<message-category>.v1
 trading.broker.command.v1
 trading.broker.event.v1
 trading.order.lifecycle.v1
+trading.recovery.event.v1
 ```
 
 원칙:
@@ -636,6 +638,7 @@ Order Service는 주문 상태 변화와 reconciliation 요청/결과를 lifecyc
 | ------------------------------ | ------------------------------------------------------- |
 | `OrderBecameUnknown`           | 주문 상태가 `UNKNOWN`으로 변경되었다는 상태 변화 사실                      |
 | `OrderReconciliationRequested` | Recovery Service에게 reconciliation workflow 생성을 요청하는 이벤트 |
+| `OrderReconciliationFailed`    | Order Service가 snapshot을 받았지만 도메인적으로 수렴시킬 수 없는 경우 |
 
 `UNKNOWN` 상태가 아닌 주문도 stale/EOD 정책에 의해 reconciliation 대상이 될 수 있으므로 두 이벤트를 분리한다.
 
@@ -722,12 +725,81 @@ Order Service는 주문 상태 변화와 reconciliation 요청/결과를 lifecyc
 
 ---
 
-# 10.10 Broker TCP 전문 논리 명세
+## 10.10.1 `ReconciliationJobFailed`
+
+### 의미
+
+`ReconciliationJobFailed`는 Recovery Service가 reconciliation workflow를 정상적으로 완료하지 못했음을 의미한다.
+
+이 이벤트는 Gateway 또는 Broker의 정확한 장애 원인을 설명하지 않는다.  
+Recovery Service가 직접 판단할 수 있는 것은 상태조회 workflow가 정해진 재시도 정책 안에서 완료되지 않았다는 사실이다.
+
+Gateway 또는 Broker 단계의 원인 분석은 Gateway의 command attempt, message journal, metric, log를 통해 수행한다.
+
+### 발생 조건
+
+Recovery Service는 다음 상황에서 `ReconciliationJobFailed`를 발행한다.
+
+| 상황 | 설명 |
+|---|---|
+| 상태조회 attempt 재시도 한도 초과 | 상태조회 command를 반복 발행했지만 Order Service의 reconciliation resolved/failed 이벤트를 받지 못함 |
+| Recovery 내부 오류 | Recovery Service 내부 오류로 job을 더 이상 진행할 수 없음 |
+| 운영자 수동 중단 | 운영자 또는 테스트 주체가 job을 중단함. Phase 2 이후 |
+
+### Payload
+
+```json
+{
+  "jobId": "018f8b7a-4c4e-7b20-9f0e-9dfeb33e92aa",
+  "orderId": "018f8b7a-4c4e-7b20-9f0e-9dfeb33e92ab",
+  "triggerType": "CANCEL_OUTCOME_UNKNOWN",
+  "latestAttemptId": "018f8b7a-4c4e-7b20-9f0e-9dfeb33e92ac",
+  "attemptCount": 3,
+  "failureType": "ATTEMPT_RETRY_EXHAUSTED",
+  "failedAt": "2026-05-13T01:25:00.000Z"
+}
+````
+
+### 필드 의미
+
+| 필드                | 필수 | 설명                                              |
+| ----------------- | -: | ----------------------------------------------- |
+| `jobId`           |  Y | 실패한 reconciliation job ID                       |
+| `orderId`         |  Y | reconciliation 대상 주문 ID                         |
+| `triggerType`     |  Y | reconciliation job 생성 원인                        |
+| `latestAttemptId` |  N | 마지막 상태조회 attempt ID. attempt 생성 전 실패했다면 없을 수 있음 |
+| `attemptCount`    |  Y | 수행한 상태조회 attempt 수                              |
+| `failureType`     |  Y | Recovery Service 관점의 workflow 실패 유형             |
+| `failedAt`        |  Y | 실패 확정 시각                                        |
+
+### `failureType` 값
+
+| failureType                | 의미                           |
+| -------------------------- | ---------------------------- |
+| `ATTEMPT_RETRY_EXHAUSTED`  | 상태조회 attempt 재시도 한도 초과       |
+| `RECOVERY_INTERNAL_ERROR`  | Recovery Service 내부 오류       |
+| `MANUALLY_ABORTED`         | 운영자 또는 테스트 주체가 job을 수동 중단함   |
+| `UNKNOWN_RECOVERY_FAILURE` | 분류되지 않은 Recovery workflow 실패 |
+
+### Consumer 처리 규칙
+
+Order Service는 `ReconciliationJobFailed`를 수신하면 다음과 같이 처리한다.
+
+1. `messageId` 기준으로 중복 메시지 여부를 확인한다.
+2. 대상 주문을 조회한다.
+3. 현재 주문의 `reconciliationStatus`가 `PENDING`이면 `FAILED`로 변경한다.
+4. 주문 상태 자체는 임의로 변경하지 않는다.
+5. 주문 이벤트 이력에 reconciliation workflow 실패 사실을 기록한다.
+6. 사용자 조회에서는 해당 주문이 복구 실패 상태임을 확인할 수 있어야 한다.
+
+---
+
+# 10.11 Broker TCP 전문 논리 명세
 
 이 단계에서는 byte offset을 확정하지 않는다.
 byte-level layout은 이 장 이후 별도 appendix로 작성한다.
 
-## 10.10.1 Frame 구조
+## 10.11.1 Frame 구조
 
 ```text
 [length header][common header][fixed-length body]
@@ -741,7 +813,7 @@ byte-level layout은 이 장 이후 별도 appendix로 작성한다.
 
 ---
 
-## 10.10.2 Common Header 논리 필드
+## 10.11.2 Common Header 논리 필드
 
 | 필드              | 설명                           |
 | --------------- | ---------------------------- |
@@ -753,7 +825,7 @@ byte-level layout은 이 장 이후 별도 appendix로 작성한다.
 
 ---
 
-## 10.10.3 전문 ID 목록
+## 10.11.3 전문 ID 목록
 
 | msgId  | 방향               | 의미         |
 | ------ | ---------------- | ---------- |
@@ -770,7 +842,7 @@ byte-level layout은 이 장 이후 별도 appendix로 작성한다.
 
 ---
 
-## 10.10.4 전문 설계 원칙
+## 10.11.4 전문 설계 원칙
 
 * Gateway와 Broker Simulator만 전문 포맷을 안다.
 * Order Service는 전문 포맷을 모른다.
@@ -785,13 +857,13 @@ byte-level layout은 이 장 이후 별도 appendix로 작성한다.
 
 ---
 
-# 10.11 Malformed 처리 기준
+# 10.12 Malformed 처리 기준
 
 `MALFORMED_SUSPECT` trigger type은 Phase 1에서 사용하지 않는다.
 
 Malformed는 다음 두 경로로 처리한다.
 
-## 10.11.1 Pending command 결과 불확실성
+## 10.12.1 Pending command 결과 불확실성
 
 예:
 
@@ -811,7 +883,7 @@ Gateway
      )
 ```
 
-## 10.11.2 식별 불가능 malformed
+## 10.12.2 식별 불가능 malformed
 
 예:
 

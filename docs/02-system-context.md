@@ -1,257 +1,959 @@
-# 2. 시스템 컨텍스트 다이어그램
+# 3. 핵심 요구사항 / 비기능 요구사항
 
-## 2.1 시스템 경계 정의
+## 3.1 요구사항 정의 원칙
 
-본 프로젝트의 System of Interest는 다음과 같다.
+본 시스템의 핵심 가치는 **해외주식 주문 상태 가시성**과 **불확실한 외부 브로커 응답에 대한 정합성 복구**다.
 
-> **해외주식 주문 상태 가시성 및 정합성 복구 플랫폼**
+요구사항은 다음 원칙을 따른다.
 
-이 시스템은 사용자의 해외주식 주문 요청을 받아 외부 브로커로 전달하고, 브로커로부터 수신한 주문 접수, 거절, 부분체결, 완전체결, 취소, 만료 이벤트를 내부 주문 상태로 반영한다.
-
-또한 브로커 응답 유실, 지연, 중복, 순서 역전으로 인해 주문 상태가 불확실해질 경우, reconciliation 절차를 통해 내부 상태를 외부 브로커 상태와 최종적으로 수렴시킨다.
-
-이 단계에서는 내부 구현 요소인 Kafka, DB, Outbox/Inbox, 개별 서비스 구조를 상세히 표현하지 않는다. 해당 내용은 이후 **아키텍처 개요**, **DB 설계**, **API / 이벤트 / 전문 명세** 단계에서 다룬다.
-
----
-
-## 2.2 외부 Actor 및 외부 시스템
-
-| 구분              | 이름                  | 역할                                                              |
-| --------------- | ------------------- | --------------------------------------------------------------- |
-| Actor           | 투자자 / 사용자           | 주문 생성, 주문 조회, 주문 취소, 실시간 주문 상태 확인                               |
-| Actor           | 운영자 / 서버 개발자        | 주문 상태 이상 추적, 브로커 전문 송수신 이력 확인, reconciliation 결과 확인             |
-| External System | 외부 브로커 Mock         | TCP 전문 기반 주문 접수, 거절, 체결, 취소, 만료, 상태조회 응답을 제공하는 simulated broker |
-| External System | Observability Stack | 로그, 메트릭, 대시보드, 알림 확인을 위한 관측성 시스템                                |
-| Actor/System    | 테스트 시나리오 제어자        | Broker Mock의 장애, 지연, 중복, 순서 역전 시나리오를 제어                         |
+1. 외부 브로커 응답은 지연, 유실, 중복, 순서 역전될 수 있다고 가정한다.
+2. 주문 상태의 최종 판단은 내부 Order Service가 수행한다.
+3. 애매한 상태는 성공/실패로 단정하지 않고 `UNKNOWN`으로 표현한다.
+4. `UNKNOWN` 상태는 reconciliation을 통해 최종 주문 상태로 수렴해야 한다.
+5. TCP 전문 통신은 실제 금융권 대외연계의 핵심 구조만 단순화해 재현한다.
+6. 1차 범위는 단일 브로커 기준으로 구현한다.
+7. 심화 확장은 **멀티 브로커 라우팅 / fallback → 운영 콘솔** 순서로 진행한다.
 
 ---
 
-## 2.3 시스템 컨텍스트 다이어그램
+## 3.2 핵심 식별자 정의
 
-```mermaid
-flowchart LR
-    User[투자자 / 사용자]
-    Operator[운영자 / 서버 개발자]
-    Scenario[테스트 시나리오 제어자]
+본 시스템에서는 여러 식별자가 함께 사용된다.
+각 식별자는 모두 “주문을 찾기 위한 값”처럼 보일 수 있지만, 생성 주체와 책임 경계가 다르다.
 
-    System[해외주식 주문 상태 가시성 및<br/>정합성 복구 플랫폼]
+핵심 원칙은 다음과 같다.
 
-    Broker[외부 브로커 Mock]
-    Obs[Observability Stack<br/>Logs / Metrics / Dashboard]
+> `orderId`는 우리 시스템 내부의 주문 식별자다.
+> `clientOrderId`와 `clientCancelRequestId`는 클라이언트 요청 재시도를 안전하게 처리하기 위한 멱등성 키다.
+> `wireMessageId`는 외부 브로커 전문 단위의 식별자다.
+> `brokerOrderId`는 브로커가 부여하는 외부 주문 식별자이며, 주문 도메인 상태 판단의 기준으로 사용하지 않는다.
+> `traceId`는 상태 판단이나 멱등성이 아니라 관측성을 위한 추적 ID다.
 
-    User -->|주문 생성 / 조회 / 취소<br/>REST API| System
-    System -->|주문 상태 실시간 알림<br/>SSE| User
+---
 
-    System <-->|주문 / 취소 / 상태조회<br/>TCP 전문 통신| Broker
-    Broker -->|접수 / 거절 / 체결 / 취소 / 만료 전문| System
+### 3.2.1 식별자 요약
 
-    Operator -->|상태 추적 / 장애 분석| System
-    Operator -->|로그 / 메트릭 확인| Obs
+| 식별자                     | 생성 주체                              | 생성 시점                            | 사용 경계                             | 목적                                     |
+| ----------------------- | ---------------------------------- | -------------------------------- | --------------------------------- | -------------------------------------- |
+| `orderId`               | Order Service                      | 주문 생성 요청이 유효하게 접수되어 내부 주문이 생성될 때 | 우리 시스템 내부                         | 주문 aggregate 식별, 상태 변경 기준              |
+| `clientOrderId`         | Client                             | 주문 생성 API 호출 전                   | Client ↔ Order Service            | 주문 생성 요청 멱등성                           |
+| `clientCancelRequestId` | Client                             | 주문 취소 API 호출 전                   | Client ↔ Order Service            | 취소 요청 멱등성                              |
+| `wireMessageId`         | Broker Gateway 또는 Broker Simulator | TCP 전문 생성 시                      | Broker Gateway ↔ Broker Simulator | 전문 단위 추적, 요청/응답 correlation, 외부 이벤트 식별 |
+| `brokerEventDedupKey`   | Broker Gateway                     | 브로커 전문을 canonical event로 변환할 때   | Broker Gateway → Order Service    | 동일 외부 브로커 사건의 중복 반영 방지                 |
+| `traceId`               | Client 또는 최초 진입 서비스                | 하나의 업무 처리 흐름이 시작될 때              | 전체 시스템                            | end-to-end 관측성 추적                      |
+| `brokerOrderId`         | Broker Simulator                   | 브로커가 주문을 접수할 때                   | Broker Gateway ↔ Broker Simulator | 브로커 측 주문 식별, 운영 추적, 상태조회 보조            |
 
-    System -->|로그 / 메트릭 / 이벤트 추적 정보| Obs
+---
 
-    Scenario -->|장애 / 지연 / 중복 / 순서 역전<br/>시나리오 설정| Broker
+### 3.2.2 `orderId`
+
+`orderId`는 우리 시스템 내부의 주문 식별자다.
+
+사용자가 주문 생성 요청을 보내고, 시스템이 이를 유효한 주문으로 받아들여 내부 주문을 생성할 때 Order Service가 부여한다.
+
+`orderId`는 다음 용도로 사용한다.
+
+* 주문 상세 조회
+* 주문 취소 요청 대상 식별
+* 주문 상태 변경 기준
+* 주문 이벤트 귀속
+* 내부 메시지의 주문 기준 key
+* reconciliation 대상 주문 식별
+* canonical broker event가 어떤 주문에 적용되어야 하는지 나타내는 기준
+
+`orderId`는 클라이언트가 최초 주문 요청 전에 알 수 없다.
+따라서 주문 생성 API의 멱등성 키로 사용할 수 없다.
+
+---
+
+### 3.2.3 `clientOrderId`
+
+`clientOrderId`는 클라이언트가 주문 생성 요청 전에 생성하는 멱등성 키다.
+
+필요한 이유는 다음과 같다.
+
+```text
+1. Client가 주문 생성 요청을 보낸다.
+2. Order Service는 주문을 생성하고 orderId를 부여한다.
+3. 그런데 응답이 Client에게 도달하기 전에 네트워크 장애가 발생한다.
+4. Client는 주문이 생성되었는지 알 수 없다.
+5. Client가 같은 주문 생성 요청을 재시도한다.
+```
+
+이때 클라이언트는 아직 `orderId`를 모를 수 있다.
+따라서 클라이언트가 미리 생성한 `clientOrderId`로 동일 주문 생성 요청인지 판단해야 한다.
+
+고유성은 다음 기준으로 본다.
+
+```text
+accountId + clientOrderId
+```
+
+같은 `accountId + clientOrderId`로 동일 payload가 다시 들어오면 기존 주문 결과를 반환한다.
+같은 `accountId + clientOrderId`인데 payload가 다르면 충돌로 처리한다.
+
+---
+
+### 3.2.4 `clientCancelRequestId`
+
+`clientCancelRequestId`는 클라이언트가 취소 요청 전에 생성하는 멱등성 키다.
+
+취소 요청도 주문 생성과 마찬가지로 네트워크 장애나 클라이언트 재시도로 중복 호출될 수 있다.
+
+예를 들어:
+
+```text
+1. Client가 주문 취소 요청을 보낸다.
+2. 시스템은 취소 요청을 접수하고 브로커 취소 처리를 시작한다.
+3. 응답이 Client에게 도달하기 전에 네트워크 장애가 발생한다.
+4. Client가 같은 취소 요청을 재시도한다.
+```
+
+이때 같은 취소 요청을 중복 생성하거나, 브로커에 중복 취소 전문을 보내면 안 된다.
+
+고유성은 다음 기준으로 본다.
+
+```text
+orderId + clientCancelRequestId
+```
+
+또는 내부적으로는 사용자 instruction 관점에서 다음과 같이 일반화할 수 있다.
+
+```text
+accountId + instructionType + clientInstructionId
+```
+
+이때:
+
+* 주문 생성 요청은 `instructionType = PLACE`, `clientInstructionId = clientOrderId`
+* 취소 요청은 `instructionType = CANCEL`, `clientInstructionId = clientCancelRequestId`
+
+로 해석할 수 있다.
+
+이 일반화는 내부 설계 개념이며, API에서는 사용자 의미에 맞게 `clientOrderId`, `clientCancelRequestId`라는 이름을 유지한다.
+
+---
+
+### 3.2.5 `clientOrderId`, `clientCancelRequestId`, `orderId`의 관계
+
+주문 생성 흐름에서의 관계는 다음과 같다.
+
+```text
+Client
+  clientOrderId 생성
+      ↓
+Order Service
+  주문 생성 요청 멱등성 확인
+      ↓
+  orderId 생성
+      ↓
+  주문 상태를 PENDING_ACK로 시작
+```
+
+취소 흐름에서의 관계는 다음과 같다.
+
+```text
+Client
+  clientCancelRequestId 생성
+      ↓
+Order Service
+  orderId 기준 주문 조회
+      ↓
+  취소 요청 멱등성 확인
+      ↓
+  주문 상태를 PENDING_CANCEL로 전환
+```
+
+정리하면 다음과 같다.
+
+| 항목                  | `clientOrderId`        | `clientCancelRequestId` | `orderId`       |
+| ------------------- | ---------------------- | ----------------------- | --------------- |
+| 생성 주체               | Client                 | Client                  | Order Service   |
+| 목적                  | 주문 생성 멱등성              | 취소 요청 멱등성               | 주문 aggregate 식별 |
+| 최초 요청 전 Client가 아는가 | 예                      | 예                       | 아니오             |
+| 주문 상태 변경 기준인가       | 아니오                    | 아니오                     | 예               |
+| 사용 범위               | Client ↔ Order Service | Client ↔ Order Service  | 시스템 내부 전반       |
+
+---
+
+### 3.2.6 `wireMessageId`
+
+`wireMessageId`는 TCP 전문 단위의 식별자다.
+
+전문을 보내는 쪽이 생성한다.
+
+| 상황                                 | 생성 주체            |
+| ---------------------------------- | ---------------- |
+| Gateway가 브로커로 요청 전문을 보낼 때          | Broker Gateway   |
+| Broker Simulator가 비동기 이벤트 전문을 보낼 때 | Broker Simulator |
+
+요청/응답 관계에서는 브로커가 동일 `wireMessageId`를 응답 전문에 echo한다.
+
+```text
+ORDR wireMessageId = W-GW-001
+ACKN wireMessageId = W-GW-001
+```
+
+브로커가 비동기로 발생시키는 체결/만료 이벤트는 Broker Simulator가 새 `wireMessageId`를 생성한다.
+
+```text
+FILL wireMessageId = W-BRK-101
+EXPR wireMessageId = W-BRK-201
+```
+
+동일 논리 이벤트를 중복 전송할 경우에는 동일 `wireMessageId`를 재사용한다.
+
+`wireMessageId`는 다음 용도로 사용한다.
+
+* 전문 송수신 추적
+* 요청/응답 correlation
+* command attempt timeout 분석
+* 브로커 이벤트 중복 판단을 위한 재료
+* 운영 디버깅
+
+단, Order Service는 `wireMessageId`를 직접 해석하지 않는다.
+전문 계층의 세부 정보는 Broker Gateway가 처리한다.
+
+---
+
+### 3.2.7 `brokerEventDedupKey`
+
+`brokerEventDedupKey`는 Broker Gateway가 브로커 전문을 canonical broker event로 변환할 때 부여하는 중복 방지 키다.
+
+목적은 다음이다.
+
+> 서로 다른 메시지에 담겨 들어온 같은 외부 브로커 사건이 주문 상태에 중복 반영되지 않도록 한다.
+
+예를 들어 브로커가 동일 체결 전문을 두 번 보낼 수 있다.
+
+```text
+FILL wireMessageId = W-BRK-101
+FILL wireMessageId = W-BRK-101
+```
+
+Gateway는 두 번 모두 canonical event로 변환할 수 있다.
+이때 두 canonical event는 서로 다른 메시지 ID를 가질 수 있지만, 같은 외부 사건을 의미한다.
+
+```text
+messageId = M-001, brokerEventDedupKey = D-101
+messageId = M-002, brokerEventDedupKey = D-101
+```
+
+Order Service는 `brokerEventDedupKey`를 기준으로 이미 반영한 외부 사건인지 판단한다.
+
+중요한 원칙은 다음이다.
+
+> Order Service는 `brokerEventDedupKey`의 내부 구조를 해석하지 않는다.
+> 동일한 `brokerEventDedupKey`는 동일한 외부 브로커 사건이라는 계약만 사용한다.
+
+Phase 1에서 Broker Gateway는 내부적으로 다음과 같은 조합으로 dedup key를 만들 수 있다.
+
+```text
+brokerCode + ":" + msgId + ":" + wireMessageId
+```
+
+하지만 이 조합 방식은 Gateway 내부 구현 규칙이다.
+Order Service 요구사항에서는 opaque key로 취급한다.
+
+같은 `brokerEventDedupKey`가 다시 들어오면 중복 이벤트로 보고 주문 상태에 재반영하지 않는다.
+같은 `brokerEventDedupKey`인데 payload가 다르면 브로커 오류 또는 프로토콜 위반으로 보고 상태에 반영하지 않는다. 이 경우 필요 시 reconciliation 후보로 올린다.
+
+---
+
+### 3.2.8 `brokerOrderId`
+
+`brokerOrderId`는 브로커가 주문을 접수하면서 부여하는 브로커 측 주문 식별자다.
+
+생성 흐름은 다음과 같다.
+
+```text
+Broker Gateway
+  ORDR 전문 전송
+      ↓
+Broker Simulator
+  주문 접수
+  brokerOrderId 생성
+      ↓
+Broker Gateway
+  ACKN 전문 수신
+```
+
+`brokerOrderId`는 다음 용도로 사용한다.
+
+* Broker Gateway의 브로커 전문 추적
+* 브로커 상태조회 보조
+* 운영자가 브로커 관점에서 주문을 추적할 때 사용
+* 향후 멀티 브로커 확장 시 외부 주문 식별
+
+중요한 점은 다음이다.
+
+> `brokerOrderId`는 Order Service의 주문 상태 판단 기준이 아니다.
+> Order Service는 `orderId`를 기준으로 주문 상태를 변경한다.
+> 브로커 선택, 브로커 주문 ID, 전문 송수신은 Broker Gateway의 책임이다.
+
+사용자-facing 주문 조회에서는 일반적으로 `brokerOrderId`를 노출하지 않는다.
+운영 추적이나 Gateway 내부 분석에서 사용한다.
+
+---
+
+### 3.2.9 `traceId`
+
+`traceId`는 하나의 업무 처리 흐름을 추적하기 위한 관측성 ID다.
+
+Phase 1에서는 주문 생성 trace를 후속 브로커 이벤트까지 전파한다.
+
+```text
+POST /orders traceId = T1
+SubmitOrderCommand traceId = T1
+ORDR traceId = T1
+ACKN traceId = T1
+BrokerOrderAcknowledged traceId = T1
+OrderStatusChanged traceId = T1
+SSE traceId = T1
+```
+
+`traceId`는 다음에 사용한다.
+
+* 애플리케이션 로그 연결
+* 메시지 흐름 추적
+* 전문 송수신 이력 추적
+* 주문 이벤트 이력 추적
+* 장애 분석
+
+단, `traceId`는 상태 판단이나 멱등성 판단에 사용하지 않는다.
+
+| 사용하면 안 되는 용도  |
+| ------------- |
+| 주문 생성 멱등성     |
+| 취소 요청 멱등성     |
+| 주문 상태 판단      |
+| 브로커 이벤트 중복 방지 |
+
+---
+
+### 3.2.10 전체 생애주기에서의 식별자 흐름
+
+주문 생성 흐름은 다음과 같다.
+
+```text
+Client
+  clientOrderId 생성
+      ↓
+Order Service
+  PLACE instruction으로 접수
+  orderId 생성
+      ↓
+Broker Gateway
+  orderId를 포함한 주문 전문 전송
+  wireMessageId 생성
+      ↓
+Broker Simulator
+  brokerOrderId 생성
+      ↓
+Broker Gateway
+  brokerOrderId 기록
+  canonical broker event 생성
+      ↓
+Order Service
+  orderId 기준 주문 상태 반영
+```
+
+취소 흐름은 다음과 같다.
+
+```text
+Client
+  clientCancelRequestId 생성
+      ↓
+Order Service
+  orderId 기준 주문 조회
+  CANCEL instruction으로 접수
+      ↓
+Broker Gateway
+  orderId를 포함한 취소 전문 전송
+  wireMessageId 생성
+      ↓
+Broker Simulator
+  취소 완료/거절 전문 응답
+      ↓
+Order Service
+  orderId 기준 주문 상태 반영
+```
+
+브로커 이벤트 중복 방지는 다음 흐름으로 처리한다.
+
+```text
+Broker Simulator
+  동일 외부 사건을 중복 전송
+      ↓
+Broker Gateway
+  동일 brokerEventDedupKey를 가진 canonical event 생성
+      ↓
+Order Service
+  brokerEventDedupKey 기준으로 이미 반영한 사건인지 확인
+      ↓
+  중복이면 상태 재반영 금지
+```
+
+전체 관측성은 다음으로 연결한다.
+
+```text
+traceId
 ```
 
 ---
 
-## 2.4 Actor 및 외부 시스템 설명
+### 3.2.11 한 줄 요약
 
-### 2.4.1 투자자 / 사용자
-
-투자자 또는 사용자는 시스템을 통해 해외주식 주문을 생성하고, 주문 상태를 조회하며, 필요할 경우 취소를 요청한다.
-
-사용자에게 중요한 것은 단순히 주문 요청이 서버에 전달되었다는 사실이 아니다. 사용자는 현재 주문이 다음 상태 중 어디에 있는지 신뢰할 수 있어야 한다.
-
-* 접수 대기
-* 브로커 접수 완료
-* 일부 체결
-* 전량 체결
-* 취소 요청 중
-* 취소 완료
-* 거절
-* 만료
-* 상태 확인 중
-
-시스템은 주문 상태 변경을 SSE 기반 실시간 알림으로 사용자에게 전달한다.
+| ID                      | 한 줄 정의                     |
+| ----------------------- | -------------------------- |
+| `orderId`               | 우리 시스템의 주문 aggregate ID    |
+| `clientOrderId`         | 주문 생성 요청의 클라이언트 멱등성 키      |
+| `clientCancelRequestId` | 취소 요청의 클라이언트 멱등성 키         |
+| `wireMessageId`         | TCP 전문 단위 식별자              |
+| `brokerEventDedupKey`   | Gateway가 생성한 외부 사건 중복 방지 키 |
+| `brokerOrderId`         | 브로커가 부여한 외부 주문 ID          |
+| `traceId`               | end-to-end 관측성 추적 ID       |
 
 ---
 
-### 2.4.2 운영자 / 서버 개발자
+## 3.3 Scope Constraints
 
-운영자 또는 서버 개발자는 주문 상태가 예상과 다르거나 `UNKNOWN`으로 진입한 경우, 시스템이 제공하는 이력과 관측성 정보를 통해 원인을 추적한다.
+### 주문 제약
 
-운영 관점에서 확인해야 하는 정보는 다음과 같다.
+* 주문 타입은 `LIMIT`만 지원한다.
+* TIF는 `DAY`로 고정한다.
+* 시장 상태는 `OPEN`, `CLOSED`만 지원한다.
+* 수량은 정수 수량만 지원한다.
+* 1차 범위에서는 단일 브로커만 지원한다.
+* Phase 1의 체결 모델은 수량 중심으로 단순화한다.
+* 주문에는 `limitPrice`를 보유하지만, 체결 이벤트에서는 `lastFillPrice`, `avgFillPrice`를 다루지 않는다.
+
+### 제외 범위
+
+* 실제 브로커 연동
+* 실제 FIX 프로토콜 구현
+* 시장가 주문
+* 다양한 TIF 옵션
+* 장전/정규장/장후/휴장 캘린더
+* 실시간 시세 시스템
+* buying power
+* position
+* 잔고 관리
+* 계좌 관리
+* 환전
+* 정산
+* 세금
+* 수수료
+* 운영 콘솔 UI
+
+### 심화 범위
+
+1차 구현 이후 다음 순서로 확장한다.
+
+1. 멀티 브로커 라우팅 / fallback
+2. 운영 콘솔
+
+---
+
+# 3.4 기능 요구사항
+
+## FR-001. 주문 생성
+
+시스템은 사용자가 해외주식 지정가 주문을 생성할 수 있어야 한다.
+
+### 수용 기준
+
+* 유효한 주문 요청은 내부 주문으로 저장되어야 한다.
+* 주문 생성 시 Order Service는 `orderId`를 생성해야 한다.
+* 주문 생성 요청에는 `clientOrderId`가 포함되어야 한다.
+* 주문 생성 직후 상태는 `PENDING_ACK`여야 한다.
+* 주문 생성 후 외부 브로커 전송 요청이 생성되어야 한다.
+
+---
+
+## FR-002. 주문 생성 멱등성
+
+시스템은 동일 `clientOrderId`를 가진 중복 주문 요청을 안전하게 처리해야 한다.
+
+### 수용 기준
+
+* 동일 `accountId + clientOrderId`와 동일 payload가 다시 들어오면 기존 주문 결과를 반환해야 한다.
+* 동일 `accountId + clientOrderId`지만 payload가 다르면 충돌로 처리해야 한다.
+* 중복 요청으로 내부 주문이 중복 생성되면 안 된다.
+* 중복 요청으로 외부 브로커에 주문이 중복 전송되면 안 된다.
+
+---
+
+## FR-003. 주문 조회
+
+시스템은 사용자가 주문 현재 상태를 조회할 수 있어야 한다.
+
+### 조회 정보
+
+* 주문 상태
+* 종목
+* 매수/매도
+* 주문 수량
+* 지정가
+* 누적 체결 수량
+* 잔여 수량
+* 브로커 주문 ID
+* reconciliation 상태
+* 생성/수정/종결 시각
+
+### 수용 기준
+
+* 주문 상세 조회는 현재 주문 상태를 반환해야 한다.
+* 주문 목록 조회는 사용자 또는 계좌 기준으로 필터링되어야 한다.
+* 존재하지 않는 주문은 명확한 오류로 응답해야 한다.
+* 다른 사용자의 주문을 조회할 수 없어야 한다.
+
+---
+
+## FR-004. 주문 취소
+
+시스템은 사용자가 미종결 주문에 대해 취소를 요청할 수 있어야 한다.
+
+### 취소 허용 상태
+
+* `PENDING_ACK`
+* `LIVE`
+* `PARTIALLY_FILLED`
+
+### 취소 거부 상태
+
+* `UNKNOWN`
+* `FILLED`
+* `CANCELED`
+* `REJECTED`
+* `EXPIRED`
+
+### 수용 기준
+
+* 취소 요청이 수락되면 주문 상태는 `PENDING_CANCEL`이 되어야 한다.
+* 부분체결 상태에서 취소 요청이 들어오면 이미 체결된 수량은 유지하고 미체결 잔량만 취소 대상으로 삼아야 한다.
+* 취소 요청 이후 브로커 응답에 따라 `CANCELED`, `FILLED`, `PARTIALLY_FILLED`, `UNKNOWN` 등으로 수렴할 수 있어야 한다.
+* 동일 취소 요청이 중복으로 들어와도 중복 취소 전문이 전송되면 안 된다.
+
+---
+
+## FR-005. 주문 상태 전이 처리
+
+시스템은 외부 브로커 이벤트를 기반으로 주문 상태를 올바르게 전이해야 한다.
+
+### 처리 대상 이벤트
+
+* 주문 접수
+* 주문 거절
+* 부분체결
+* 완전체결
+* 취소 완료
+* 취소 거절
+* DAY 주문 만료
+* 상태조회 결과
+
+### 수용 기준
+
+* 주문 접수 이벤트는 주문을 `LIVE`로 전환해야 한다.
+* 주문 거절 이벤트는 주문을 `REJECTED`로 종결해야 한다.
+* 부분체결 이벤트는 주문을 `PARTIALLY_FILLED`로 전환하고 누적 체결 수량과 잔여 수량을 갱신해야 한다.
+* 완전체결 이벤트는 주문을 `FILLED`로 종결해야 한다.
+* 취소 완료 이벤트는 주문을 `CANCELED`로 종결해야 한다.
+* 장 마감 만료 이벤트는 주문을 `EXPIRED`로 종결해야 한다.
+* 종결 상태 이후 잘못 도착한 이벤트는 주문 상태를 오염시키면 안 된다.
+
+---
+
+## FR-006. 부분체결 처리
+
+시스템은 주문의 부분체결을 지원해야 한다.
+
+### 수용 기준
+
+* 부분체결 시 `cumQty`와 `leavesQty`가 갱신되어야 한다.
+* `0 < cumQty < orderQty`인 경우 주문 상태는 `PARTIALLY_FILLED`여야 한다.
+* 동일 체결 이벤트가 중복 수신되어도 누적 체결 수량이 중복 반영되면 안 된다.
+* 최종적으로 `cumQty == orderQty`가 되면 주문은 `FILLED`로 종결되어야 한다.
+
+---
+
+## FR-007. 부분체결 후 취소 처리
+
+시스템은 부분체결된 주문의 미체결 잔량에 대해 취소 요청을 처리할 수 있어야 한다.
+
+부분체결 이후 취소 요청은 이미 체결된 수량을 취소하지 않는다.
+취소 요청은 미체결 잔량에 대해서만 적용된다.
+
+### 수용 기준
+
+* `PARTIALLY_FILLED` 상태에서 취소 요청이 가능해야 한다.
+* 취소 요청이 수락되면 주문은 `PENDING_CANCEL`로 전환되어야 한다.
+* 취소 완료 시 주문은 `CANCELED`로 종결되어야 한다.
+* 이때 `cumQty > 0`, `leavesQty = 0`일 수 있어야 한다.
+* 취소 요청 중 추가 체결이 발생할 수 있어야 한다.
+* 취소 요청 중 전량 체결되면 최종 상태는 `FILLED`여야 한다.
+* 취소 거절 시 주문은 수량 기준으로 `LIVE`, `PARTIALLY_FILLED`, `FILLED` 중 하나로 수렴해야 한다.
+
+---
+
+## FR-008. DAY 주문 만료 처리
+
+시스템은 `DAY` 주문의 미체결 잔량 만료를 처리해야 한다.
+
+### 수용 기준
+
+* `LIVE` 주문은 장 마감 시 `EXPIRED`로 전환될 수 있어야 한다.
+* `PARTIALLY_FILLED` 주문은 장 마감 시 잔량이 만료되어 `EXPIRED`로 전환될 수 있어야 한다.
+* `PENDING_CANCEL` 주문도 장 마감 이벤트에 따라 `EXPIRED`로 수렴할 수 있어야 한다.
+* `EXPIRED` 상태에서는 `leavesQty = 0`이어야 한다.
+* `cumQty > 0`이고 `EXPIRED`인 경우 부분체결 후 잔량 만료로 해석되어야 한다.
+
+---
+
+## FR-009. 실시간 주문 상태 알림
+
+시스템은 주문 상태 변경을 사용자에게 실시간으로 전달해야 한다.
+
+1차 범위에서는 SSE를 사용한다.
+
+### 수용 기준
+
+* 주문 상태가 변경되면 사용자에게 SSE 이벤트가 전달되어야 한다.
+* 부분체결, 완전체결, 취소, 거절, 만료, `UNKNOWN` 진입 이벤트가 전달되어야 한다.
+* SSE 연결이 끊겨도 사용자는 주문 조회 API를 통해 최종 상태를 확인할 수 있어야 한다.
+* SSE는 상태 저장소가 아니라 알림 채널로만 사용되어야 한다.
+
+---
+
+## FR-010. 외부 브로커 전문 통신
+
+시스템은 외부 브로커 Mock과 TCP 전문 기반으로 통신해야 한다.
+
+### 포함 요소
+
+* TCP length-prefixed frame
+* 공통 전문 header
+* fixed-length body
+* 전문 ID별 parser/serializer
+* field padding
+* numeric zero padding
+* `wireMessageId` 기반 전문 추적 및 중복 이벤트 식별
+* `traceId` 기반 처리 흐름 추적
+
+### 수용 기준
+
+* 시스템은 주문 요청 전문을 생성해 Broker Simulator로 전송할 수 있어야 한다.
+* 시스템은 취소 요청 전문을 생성해 Broker Simulator로 전송할 수 있어야 한다.
+* 시스템은 상태조회 전문을 생성해 Broker Simulator로 전송할 수 있어야 한다.
+* 시스템은 브로커 응답 전문을 파싱해 내부 canonical event로 변환할 수 있어야 한다.
+* 전문 parsing failure와 business reject는 구분되어야 한다.
+* 전문 포맷은 Order Service 도메인 모델에 직접 노출되면 안 된다.
+
+---
+
+## FR-011. Broker Simulator
+
+Broker Simulator는 stateful한 외부 브로커 역할을 수행해야 한다.
+
+### 지원 전문
+
+* 주문 요청
+* 주문 접수
+* 주문 거절
+* 부분체결
+* 완전체결
+* 취소 요청
+* 취소 완료
+* 취소 거절
+* 주문 만료
+* 주문 상태 조회
+* 프로토콜 오류 응답
+
+### 수용 기준
+
+* Broker Simulator는 주문별 상태를 유지해야 한다.
+* Broker Simulator는 부분체결 후 완전체결 시나리오를 재현할 수 있어야 한다.
+* Broker Simulator는 부분체결 후 취소 시나리오를 재현할 수 있어야 한다.
+* Broker Simulator는 ACK 유실, 지연, 중복 이벤트, 순서 역전, malformed 전문을 테스트 시나리오로 주입할 수 있어야 한다.
+* Broker Simulator는 동일 논리 이벤트를 중복 전송할 경우 동일 `wireMessageId`를 재사용해야 한다.
+
+---
+
+## FR-012. `UNKNOWN` 상태 처리
+
+시스템은 외부 응답이 불확실한 주문을 `UNKNOWN` 상태로 전환할 수 있어야 한다.
+
+### 수용 기준
+
+* 주문 전송 후 ACK timeout이 발생하면 주문은 `UNKNOWN`으로 전환될 수 있어야 한다.
+* 취소 요청 후 응답 timeout이 발생하면 주문은 `UNKNOWN`으로 전환될 수 있어야 한다.
+* `UNKNOWN` 상태에서는 사용자가 추가 취소 요청을 할 수 없어야 한다.
+* `UNKNOWN` 상태는 reconciliation 대상이어야 한다.
+* `UNKNOWN` 진입 사유는 추적 가능해야 한다.
+
+---
+
+## FR-013. Reconciliation
+
+시스템은 `UNKNOWN` 상태 주문을 브로커 상태조회 기반으로 복구해야 한다.
+
+### 수용 기준
+
+* `UNKNOWN` 주문에 대해 reconciliation job이 생성되어야 한다.
+* Recovery Service는 브로커 상태조회 명령을 발행해야 한다.
+* 상태조회 결과에 따라 주문은 `LIVE`, `PARTIALLY_FILLED`, `FILLED`, `CANCELED`, `REJECTED`, `EXPIRED` 중 하나로 수렴해야 한다.
+* reconciliation 성공/실패 이력은 추적 가능해야 한다.
+* reconciliation 결과가 사용자 조회 상태에 반영되어야 한다.
+
+---
+
+## FR-014. 운영 추적 정보 제공
+
+시스템은 장애 분석에 필요한 최소 운영 이력을 남겨야 한다.
+
+### 필수 이력
 
 * 주문 상태 변경 이력
-* 브로커 전문 송수신 이력
+* 브로커 전문 송수신 journal
 * command attempt 이력
-* malformed 전문 처리 이력
 * reconciliation job 이력
-* Kafka 메시지 처리 실패 또는 재처리 이력
-* 주요 메트릭과 로그
+* malformed 전문 처리 이력
+* 메시지 처리 실패 이력
 
-1차 범위에서는 고도화된 운영 콘솔 UI를 만들지 않는다. 운영 콘솔은 심화 2에서 구현한다.
-다만 1차 범위에서도 운영 추적에 필요한 데이터, 로그, 메트릭은 반드시 남긴다.
+### 수용 기준
 
----
-
-### 2.4.3 외부 브로커 Mock
-
-외부 브로커 Mock은 실제 브로커 또는 대외기관을 대신하는 simulated external system이다.
-
-1차 범위에서는 실제 브로커와 연동하지 않는다. 대신 Netty 기반 TCP 서버를 구현하여 실제 금융권 전문 통신의 핵심 구조를 단순화해 재현한다.
-
-Broker Mock은 다음 특성을 가진다.
-
-* length-prefixed frame
-* 공통 전문 header
-* 고정 길이 body
-* 전문 ID별 parser/serializer
-* 주문 접수 / 거절 / 체결 / 취소 / 만료 / 상태조회 전문
-* requestId / traceId / clientOrderId / brokerOrderId 기반 correlation
-* malformed 전문 처리
-* 지연, 중복, 순서 역전, 무응답 시나리오 주입
-
-Broker Mock의 목적은 실제 브로커를 완벽히 구현하는 것이 아니다.
-목적은 **외부기관 연계의 불확실성을 통제된 방식으로 재현하는 것**이다.
+* 특정 주문의 상태 변경 원인을 추적할 수 있어야 한다.
+* 특정 `orderId`, `wireMessageId`, `traceId` 기준으로 흐름을 추적할 수 있어야 한다.
+* `UNKNOWN` 진입 원인과 reconciliation 결과를 확인할 수 있어야 한다.
 
 ---
 
-### 2.4.4 Observability Stack
+# 3.5 비기능 요구사항
 
-Observability Stack은 시스템 외부의 운영 지원 도구다.
+## NFR-001. 정합성
 
-1차 범위에서는 다음 수준의 도구를 상정한다.
+시스템은 외부 브로커 이벤트가 중복, 지연, 순서 역전되어도 주문 상태를 일관되게 유지해야 한다.
 
-* 애플리케이션 로그
-* Prometheus metrics
-* Grafana dashboard
-* 필요 시 Loki 또는 파일 로그 기반 분석
+### 기준
 
-시스템은 Observability Stack으로 다음 정보를 제공한다.
+* 주문 상태의 source of truth는 Order Service DB다.
+* 주문 상태 변경은 Order Service만 수행한다.
+* 중복 체결 이벤트는 누적 체결 수량에 중복 반영되면 안 된다.
+* 종결 상태의 주문은 잘못된 후속 이벤트로 상태가 오염되면 안 된다.
+* `UNKNOWN` 상태는 reconciliation을 통해 최종 상태로 수렴 가능해야 한다.
+
+---
+
+## NFR-002. 메시지 발행 신뢰성
+
+시스템은 DB 상태 변경과 비동기 메시지 발행 사이의 장애로 인해 복구 불가능한 메시지 유실이 발생하지 않도록 설계되어야 한다.
+
+### 기준
+
+* 주문 생성 후 브로커 전송 요청이 영구 유실되면 안 된다.
+* 주문 취소 후 브로커 취소 요청이 영구 유실되면 안 된다.
+* 브로커 전문 수신 이력이 저장되었는데 canonical event 발행이 영구 유실되면 안 된다.
+* reconciliation job이 생성되었는데 상태조회 command가 영구 유실되면 안 된다.
+* 메시지 발행 실패는 재시도 가능해야 한다.
+
+### 구현 방향
+
+* 서비스별 Outbox 패턴 적용을 후보로 둔다.
+* 최종 채택 여부와 세부 방식은 ADR에서 결정한다.
+
+---
+
+## NFR-003. 메시지 소비 멱등성
+
+시스템은 비동기 메시지가 중복 소비되더라도 주문 상태, 브로커 전송, reconciliation job이 중복 처리로 오염되지 않도록 설계되어야 한다.
+
+### 기준
+
+* 동일 broker event가 중복 소비되어도 주문 상태가 중복 갱신되면 안 된다.
+* 동일 command가 중복 소비되어도 브로커 주문 전문이 중복 전송되면 안 된다.
+* 동일 lifecycle event가 중복 소비되어도 reconciliation job이 중복 생성되면 안 된다.
+* consumer 처리 실패 이후 재처리해도 상태가 오염되면 안 된다.
+
+### 구현 방향
+
+* 서비스별 Inbox 또는 processed message 기록을 후보로 둔다.
+* 이벤트별 semantic dedup key 사용을 후보로 둔다.
+* 최종 채택 여부와 세부 방식은 ADR에서 결정한다.
+
+---
+
+## NFR-004. 장애 격리
+
+외부 브로커 장애는 주문 시스템 전체 장애로 전파되지 않아야 한다.
+
+### 기준
+
+* 브로커 응답 timeout이 발생해도 주문 데이터가 유실되면 안 된다.
+* 브로커 응답이 애매하면 `UNKNOWN`으로 격리되어야 한다.
+* `UNKNOWN` 주문은 reconciliation 대상이 되어야 한다.
+* 브로커 통신 실패가 Order Service API 전체 장애로 확산되면 안 된다.
+
+---
+
+## NFR-005. 관측성
+
+시스템은 주문 상태 변경과 외부 브로커 연계 흐름을 추적할 수 있어야 한다.
+
+### 기준
+
+* 주문 상태 변경은 이벤트 이력으로 남아야 한다.
+* 브로커 전문 송수신 원문과 파싱 결과를 추적할 수 있어야 한다.
+* `orderId`, `wireMessageId`, `traceId` 기준으로 추적 가능해야 한다.
+* reconciliation job의 생성, 실행, 성공, 실패를 추적할 수 있어야 한다.
+* 주요 메트릭을 수집해야 한다.
+
+### 주요 메트릭 후보
 
 * 주문 생성 수
 * 주문 상태별 개수
-* 브로커 ACK 지연
-* 체결 이벤트 처리 지연
+* 브로커 ACK latency
+* 체결 이벤트 처리 latency
 * timeout 발생 수
 * `UNKNOWN` 진입 수
 * reconciliation 성공/실패 수
 * malformed 전문 수
-* Kafka publish/consume 실패 수
+* Kafka publish 실패 수
+* Kafka consume 실패 수
 
 ---
 
-### 2.4.5 테스트 시나리오 제어자
+## NFR-006. 성능 및 지연 관측 가능성
 
-테스트 시나리오 제어자는 일반 사용자가 아니라, 개발 및 테스트 환경에서 Broker Mock에 특정 장애 시나리오를 주입하는 actor다.
+시스템은 주문 생성, 브로커 ACK 반영, 체결 이벤트 반영, reconciliation 수행 과정의 latency를 측정할 수 있어야 한다.
 
-테스트 시나리오 제어자는 다음 상황을 Broker Mock에 설정할 수 있다.
+이 항목의 수치는 프로덕션 SLO가 아니라, 1차 구현 완료 후 성능 회귀 여부를 판단하기 위한 **초기 벤치마크 목표 후보**다.
 
-* ACK 지연
-* ACK 유실
-* 중복 체결 이벤트
-* ACK보다 체결 이벤트 먼저 전송
-* 취소 중 추가 체결
-* malformed 전문 응답
-* 상태조회 snapshot mismatch
+### 전제
 
-이 actor를 컨텍스트 다이어그램에 포함하는 이유는 명확하다.
+* 로컬 또는 단일 개발 환경 기준
+* 단일 브로커
+* 브로커 지연 시나리오 미주입
+* 정상 주문 흐름 기준
+* 실제 운영 SLO가 아니라 프로젝트 내부 기준
 
-> 이 프로젝트는 단순 정상 흐름 구현이 아니라, 외부 브로커 장애와 불확실성을 재현하고 검증하는 시스템이기 때문이다.
+### 초기 벤치마크 목표 후보
 
----
-
-## 2.5 시스템 내부와 외부 경계
-
-### 2.5.1 시스템 내부에 포함되는 요소
-
-컨텍스트 다이어그램에서는 하나의 큰 시스템으로 표현하지만, 내부적으로는 다음 요소를 포함한다.
-
-* Order Service
-* Broker Gateway Service
-* Recovery Service
-* Kafka
-* 각 서비스 DB
-* Outbox / Inbox
-* SSE Publisher
-* 주문 상태머신
-* Reconciliation Worker
-
-이 요소들은 컨텍스트 다이어그램에서는 세부적으로 표현하지 않는다.
-이후 **7. 아키텍처 개요** 단계에서 상세히 분해한다.
+| 구간                                     |    초기 목표 |
+| -------------------------------------- | -------: |
+| 주문 생성 API p95                          | 200ms 이하 |
+| 주문 조회 API p95                          | 100ms 이하 |
+| 주문 생성 후 `PENDING_ACK` 저장까지 p95         | 200ms 이하 |
+| 브로커 ACK 수신 후 Order DB 상태 반영까지 p95      | 500ms 이하 |
+| Order DB 상태 변경 후 SSE 전달까지 p95          |    1초 이하 |
+| `UNKNOWN` 진입 후 reconciliation 완료까지 p95 |   60초 이하 |
 
 ---
 
-### 2.5.2 시스템 외부로 보는 요소
+## NFR-007. 확장성
 
-다음 요소는 시스템 외부로 본다.
+시스템은 향후 멀티 브로커 라우팅과 fallback 확장을 고려해야 한다.
 
-* 투자자 / 사용자
-* 운영자 / 서버 개발자
-* 외부 브로커 Mock
-* Observability Stack
-* 테스트 시나리오 제어자
+### 기준
 
----
-
-## 2.6 컨텍스트 경계 결정 사항
-
-### 결정 1. Broker Mock은 시스템 외부로 표현한다
-
-Broker Mock은 프로젝트에서 직접 구현하지만, 시스템 컨텍스트에서는 외부 시스템으로 표현한다.
-
-이유는 다음과 같다.
-
-* 실제 브로커 또는 대외기관을 대체하는 test double이다.
-* 주문 시스템은 브로커를 내부 구현체로 간주하면 안 된다.
-* 향후 멀티 브로커 또는 실제 브로커 연계로 교체될 수 있어야 한다.
-* Broker Mock을 외부 시스템으로 두어야 대외연계 경계가 선명해진다.
+* Order Service 도메인 모델은 특정 브로커 전문 포맷에 의존하면 안 된다.
+* Broker Gateway는 브로커 어댑터를 분리할 수 있어야 한다.
+* Broker Simulator는 향후 Broker A/B로 확장 가능해야 한다.
+* 브로커 선택 정책은 주문 도메인 핵심 로직과 분리 가능해야 한다.
 
 ---
 
-### 결정 2. Kafka와 DB는 컨텍스트 다이어그램에 직접 노출하지 않는다
+## NFR-008. 유지보수성
 
-Kafka와 DB는 시스템 내부 구현 요소다.
+시스템은 도메인 로직, 메시징 로직, 전문 통신 로직이 명확히 분리되어야 한다.
 
-컨텍스트 단계에서 Kafka와 DB를 노출하면, 시스템이 해결하려는 문제보다 구현 기술이 먼저 보인다.
-따라서 이 단계에서는 감춘다.
+### 기준
 
-Kafka와 DB는 이후 다음 단계에서 상세화한다.
-
-* **7. 아키텍처 개요**
-* **9. DB 설계**
-* **10. API / 이벤트 / 전문 명세**
+* 주문 상태머신은 독립적으로 테스트 가능해야 한다.
+* TCP 전문 parser/serializer는 Order Service에 노출되면 안 된다.
+* canonical event는 브로커 전문 포맷과 내부 주문 도메인 사이의 경계 역할을 해야 한다.
+* 새로운 브로커 통신 방식이 추가되어도 주문 상태 모델을 재작성하지 않아야 한다.
 
 ---
 
-### 결정 3. Observability Stack은 외부 지원 시스템으로 둔다
+## NFR-009. 테스트 가능성
 
-Observability Stack은 시스템의 핵심 주문 처리 경로에는 포함되지 않는다.
-하지만 운영성과 품질 속성 검증에 중요하므로 외부 지원 시스템으로 표현한다.
+시스템은 정상 흐름뿐 아니라 장애, 경합, 중복, 순서 역전 시나리오를 재현 가능해야 한다.
 
----
+### 기준
 
-### 결정 4. 테스트 시나리오 제어자는 별도 actor로 둔다
-
-Broker Mock은 단순 stub이 아니라, 장애, 지연, 중복, 순서 역전 시나리오를 재현하는 simulator다.
-따라서 테스트 시나리오 제어 행위를 컨텍스트에 명시한다.
-
-이는 이 프로젝트가 단순 기능 구현이 아니라, 외부 시스템 불확실성을 재현하고 검증하는 것을 핵심 목표로 삼는다는 점을 드러낸다.
+* Broker Simulator는 테스트 시나리오를 주입할 수 있어야 한다.
+* ACK 유실, 중복 체결, ACK보다 선행하는 체결 이벤트를 재현할 수 있어야 한다.
+* 부분체결 후 취소 경합을 재현할 수 있어야 한다.
+* malformed 전문을 주입할 수 있어야 한다.
+* 상태머신, 전문 parser, reconciliation 흐름은 자동화 테스트로 검증되어야 한다.
 
 ---
 
-## 2.7 확정 사항 요약
+## NFR-010. 최소 보안
 
-| 항목                  | 결정                                          |
-| ------------------- | ------------------------------------------- |
-| System of Interest  | 해외주식 주문 상태 가시성 및 정합성 복구 플랫폼                 |
-| 사용자 actor           | 투자자 / 사용자                                   |
-| 운영 actor            | 운영자 / 서버 개발자                                |
-| 외부 브로커              | 시스템 외부의 Broker Mock으로 표현                    |
-| Broker Mock 성격      | Netty 기반 TCP 전문 서버로 동작하는 stateful simulator |
-| Observability Stack | 외부 지원 시스템으로 표현                              |
-| 테스트 시나리오 제어자        | 별도 actor로 표현                                |
-| Kafka / DB          | 컨텍스트 다이어그램에서는 숨김                            |
-| 내부 서비스 구조           | 이후 아키텍처 개요 단계에서 상세화                         |
+1차 범위에서 실제 인증/인가 시스템은 구현하지 않는다.
+다만 사용자 간 주문 접근 경계와 운영 API 분리는 최소 수준으로 보장한다.
+
+### 기준
+
+* 사용자 요청은 account/user 식별자 기준으로 주문 접근 범위를 제한해야 한다.
+* 다른 사용자의 주문을 조회하거나 취소할 수 없어야 한다.
+* 운영/테스트용 API는 일반 사용자 API와 분리되어야 한다.
+* Broker Simulator admin API는 로컬/테스트 환경 전용으로 둔다.
+* 민감 정보는 로그에 남기지 않는다.
+
+---
+
+# 3.6 요구사항 우선순위
+
+## Must Have
+
+* 주문 생성
+* 주문 생성 멱등성
+* 주문 조회
+* 주문 취소
+* 주문 상태 전이
+* 부분체결 처리
+* 부분체결 후 취소 처리
+* DAY 주문 만료 처리
+* SSE 상태 알림
+* TCP 전문 기반 Broker Simulator
+* Broker 전문 → canonical event 변환
+* `UNKNOWN` 상태 처리
+* Reconciliation
+* 중복 이벤트 방어
+* 기본 운영 이력
+
+## Should Have
+
+* malformed 전문 처리
+* ACK보다 먼저 도착하는 체결 이벤트 처리
+* 부분체결 후 취소 경합 처리
+* 기본 메트릭 수집
+* Broker Simulator scenario admin API
+* 주문 이벤트 타임라인 조회 API
+
+## Could Have
+
+* 간단한 Grafana dashboard
+* DLQ 조회
+* 수동 reconciliation trigger
+* 브로커별 지연 메트릭
+* 테스트 리포트 자동 생성
+
+## Won’t Have in Phase 1
+
+* 실제 브로커 연동
+* 실제 FIX
+* 멀티 브로커 라우팅
+* fallback
+* 운영 콘솔 UI
+* buying power
+* position
+* 잔고 관리
+* 계좌 관리
+* 정산
+* 환전
+* 세금
+* 실시간 시세
+* 복잡한 시장 세션 캘린더

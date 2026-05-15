@@ -224,7 +224,6 @@ Phase 1에서는 다음 두 종류의 instruction을 사용한다.
 | ---------- | ------------------------- |
 | `NONE`     | reconciliation 대상이 아님     |
 | `PENDING`  | reconciliation 필요         |
-| `RUNNING`  | reconciliation 수행 중       |
 | `RESOLVED` | reconciliation으로 상태 수렴 완료 |
 | `FAILED`   | reconciliation 실패         |
 
