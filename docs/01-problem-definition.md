@@ -122,7 +122,7 @@
   * 주문 접수/거절/체결/취소/만료/상태조회 전문
   * field padding
   * numeric zero padding
-  * requestId/traceId 기반 correlation
+  * wireMessageId/traceId 기반 correlation
   * malformed 전문 처리
 
 #### 비동기 처리 및 정합성
@@ -263,7 +263,7 @@ Order Service 도메인 모델은 전문 포맷에 의존하지 않는다.
 ### 운영적 성공 기준
 
 * 주문별 상태 변경 이력을 이벤트 타임라인으로 확인할 수 있다.
-* 브로커 전문 송수신 이력을 requestId, traceId, clientOrderId, brokerOrderId 기준으로 추적할 수 있다.
+* 브로커 전문 송수신 이력을 wireMessageId, traceId, clientOrderId, brokerOrderId 기준으로 추적할 수 있다.
 * command attempt 이력을 통해 브로커 전송 성공, 실패, timeout을 구분할 수 있다.
 * malformed 전문 처리 결과를 추적할 수 있다.
 * Kafka 메시지 중복 소비가 주문 상태 오염으로 이어지지 않는다.

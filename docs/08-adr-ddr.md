@@ -1103,7 +1103,7 @@ Accepted
 Reconciliation 실패는 하나의 의미가 아니다.
 
 상태조회 command 자체가 실패하거나 재시도 한도를 초과하는 경우가 있다.  
-이 경우는 Recovery Service가 알고 있다.
+이 경우는 Broker Gateway의 상태조회 attempt report와 Recovery Service의 deadline 정책을 통해 Recovery Service가 판단한다.
 
 반대로 상태조회 snapshot은 수신했지만, 해당 snapshot을 주문 상태로 적용할 수 없는 경우도 있다.  
 이 경우는 Order Service가 알고 있다.
@@ -1118,6 +1118,9 @@ Reconciliation 실패를 두 종류로 분리한다.
 |---|---|---|---|
 | workflow failure | Recovery Service | `ReconciliationJobFailed` | Recovery Service → Order Service |
 | domain resolution failure | Order Service | `OrderReconciliationFailed` | Order Service → Recovery Service |
+
+Broker Gateway는 상태조회 command의 전문 송수신 결과를 `StatusQueryAttemptReported` 이벤트로 Recovery Service에 보고한다.
+이 이벤트는 workflow 관측 이벤트이며 주문 상태를 직접 변경하지 않는다.
 
 #### Workflow failure
 

@@ -341,13 +341,14 @@ erDiagram
 
 * `NONE`
 * `PENDING`
-* `RUNNING`
 * `RESOLVED`
 * `FAILED`
 
 ### 설계 메모
 
 * `trade_order`는 정적 주문 요청 정보와 동적 주문 상태를 함께 보유한다.
+* `reconciliation_status`는 주문 관점의 복구 필요/결과 상태만 표현한다.
+* Reconciliation workflow 실행 상태인 `RUNNING`은 Recovery Service의 `reconciliation_job.status`에서 관리한다.
 * Phase 1에서는 이를 1:1 테이블로 분리하지 않는다.
 * `avg_fill_price`, `last_fill_price`는 두지 않는다.
 * Phase 1의 체결 모델은 수량 중심이다.
@@ -805,6 +806,7 @@ Broker Gateway가 broker event를 발행하기 위한 outbox다.
 * `BrokerOrderExpired`
 * `BrokerOrderStatusSnapshot`
 * `BrokerCommandOutcomeUnknown`
+* `StatusQueryAttemptReported`
 
 ---
 
@@ -840,6 +842,8 @@ Broker Gateway consumer의 메시지 중복 방지 테이블이다.
 | `instruction_id` | `BINARY(16)`   |    Y | 관련 active instruction ID |
 | `attempt_count`  | `INT`          |    N | 시도 횟수                    |
 | `next_retry_at`  | `DATETIME(3)`  |    Y | 다음 재시도 시각                |
+| `failure_type`   | `VARCHAR(64)`  |    Y | Recovery workflow 실패 유형    |
+| `failure_message` | `VARCHAR(512)` |    Y | Recovery workflow 실패 설명    |
 | `created_at`     | `DATETIME(3)`  |    N | 생성 시각                    |
 | `started_at`     | `DATETIME(3)`  |    Y | 시작 시각                    |
 | `finished_at`    | `DATETIME(3)`  |    Y | 종료 시각                    |
@@ -859,10 +863,10 @@ Broker Gateway consumer의 메시지 중복 방지 테이블이다.
 
 `trigger_type`
 
-* `UNKNOWN`
-* `STALE_ORDER`
-* `EOD_SWEEP`
-* `MALFORMED_SUSPECT`
+* `SUBMIT_OUTCOME_UNKNOWN`
+* `CANCEL_OUTCOME_UNKNOWN`
+* `STALE_NON_TERMINAL`
+* `EOD_NON_TERMINAL`
 * `MANUAL`
 
 `status`
@@ -872,13 +876,25 @@ Broker Gateway consumer의 메시지 중복 방지 테이블이다.
 * `SUCCEEDED`
 * `FAILED`
 
+`failure_type`
+
+* `ATTEMPT_RETRY_EXHAUSTED`
+* `RECOVERY_INTERNAL_ERROR`
+* `MANUALLY_ABORTED`
+* `UNKNOWN_RECOVERY_FAILURE`
+
 ### 설계 메모
 
 * `NOT_FOUND` 결과는 자동 종결하지 않고 실패 이력으로 남긴다.
-* active cancel instruction이 있는 경우 상태조회 결과에 따라 cancel command 재발행이 이어질 수 있다.
+* Phase 1에서는 `MALFORMED_SUSPECT` trigger type을 사용하지 않는다.
+* 식별 불가능한 malformed 전문은 Gateway journal/metric에 남기고, 이후 stale/EOD 탐지에 의해 `STALE_NON_TERMINAL` 또는 `EOD_NON_TERMINAL`로 간접 복구한다.
+* active cancel instruction이 있는 경우 상태조회 결과에 따라 Order Service가 cancel command 재발행 여부를 결정한다.
 * 최대 재시도 횟수는 row에 저장하지 않고 애플리케이션 정책으로 관리한다.
 * 최신 snapshot/error 값은 이 테이블에 복사하지 않는다.
 * 시도 결과 상세는 `reconciliation_attempt`에서 조회한다.
+* `failure_type`은 Recovery workflow 실패 사유만 저장한다.
+* 개별 상태조회 attempt 또는 Gateway report의 오류는 `reconciliation_attempt.error_code`, `reconciliation_attempt.error_message`에 저장한다.
+* Order Service가 snapshot을 도메인적으로 적용하지 못한 사유는 `order_event.payload_json`에 저장한다.
 
 ---
 
@@ -895,9 +911,8 @@ Broker Gateway consumer의 메시지 중복 방지 테이블이다.
 | `order_id`              | `BINARY(16)`   |    N | 주문 ID                 |
 | `broker_code`           | `VARCHAR(32)`  |    N | 조회 대상 브로커             |
 | `wire_message_id`       | `VARCHAR(64)`  |    Y | 상태조회 전문 ID            |
-| `result_status`         | `VARCHAR(32)`  |    N | 시도 결과                 |
-| `snapshot_status`       | `VARCHAR(32)`  |    Y | 브로커 snapshot 상태       |
-| `snapshot_payload_json` | `JSON`         |    Y | snapshot payload      |
+| `result_status`         | `VARCHAR(32)`  |    N | attempt 처리 상태         |
+| `snapshot_status`       | `VARCHAR(32)`  |    Y | 브로커 snapshot 요약 상태    |
 | `error_code`            | `VARCHAR(64)`  |    Y | 오류 코드                 |
 | `error_message`         | `VARCHAR(512)` |    Y | 오류 메시지                |
 | `requested_at`          | `DATETIME(3)`  |    N | 요청 시각                 |
@@ -917,9 +932,10 @@ Broker Gateway consumer의 메시지 중복 방지 테이블이다.
 
 `result_status`
 
-* `SUCCESS`
-* `TIMEOUT`
+* `REQUESTED`
+* `RESOLVED`
 * `FAILED`
+* `TIMED_OUT`
 
 `snapshot_status`
 
@@ -931,18 +947,26 @@ Broker Gateway consumer의 메시지 중복 방지 테이블이다.
 * `EXPIRED`
 * `NOT_FOUND`
 
+### 설계 메모
+
+* Recovery Service는 snapshot을 도메인 상태로 해석하지 않는다.
+* `wire_message_id`, `snapshot_status`, `error_code`, `error_message`는 Broker Gateway의 `StatusQueryAttemptReported` 이벤트를 통해 갱신한다.
+* `snapshot_status`는 운영 추적용 요약값이며, 주문 상태 수렴 판단에는 사용하지 않는다.
+* snapshot 상세 payload는 Gateway의 broker event와 Order Service의 `order_event.payload_json`에 남기고, Recovery DB에는 중복 저장하지 않는다.
+* `result_status`는 Gateway report와 Order Service의 `OrderReconciliationResolved` / `OrderReconciliationFailed` 이벤트를 기준으로 갱신한다.
+
 ---
 
 ## 9.8.3 `outbox_message`
 
-Recovery Service가 상태조회 command 또는 취소 재시도 command를 발행하기 위한 outbox다.
+Recovery Service가 상태조회 command 또는 복구 workflow 실패 이벤트를 발행하기 위한 outbox다.
 
 구조는 `order_db.outbox_message`와 동일하다.
 
 주요 발행 대상:
 
 * Query Order Status Command
-* Retry Cancel Command
+* ReconciliationJobFailed
 
 ---
 
@@ -957,6 +981,7 @@ Recovery Service consumer의 메시지 중복 방지 테이블이다.
 * Order Became Unknown
 * Reconciliation Required
 * Order Lifecycle Event
+* Status Query Attempt Report
 
 ---
 

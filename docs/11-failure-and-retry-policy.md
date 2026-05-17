@@ -73,16 +73,19 @@ Recovery Service
 Broker Gateway
   -> 브로커 상태조회 전문 송신
   -> BrokerOrderStatusSnapshot 발행
+  -> StatusQueryAttemptReported 발행
 
 Order Service
   -> snapshot을 주문 상태머신에 적용
   -> OrderReconciliationResolved 또는 OrderReconciliationFailed 발행
 
 Recovery Service
-  -> 결과 이벤트를 보고 job / attempt 종료
+  -> StatusQueryAttemptReported로 wireMessageId, snapshot 요약, 오류 정보를 기록
+  -> Order Service 결과 이벤트를 보고 job / attempt 종료
 ```
 
-즉, Recovery Service의 `reconciliation_attempt`는 snapshot 저장소가 아니라 **상태조회 workflow 시도 이력**이다.
+즉, Recovery Service의 `reconciliation_attempt`는 snapshot 도메인 해석 저장소가 아니라 **상태조회 workflow 시도 이력**이다.
+Recovery Service는 Gateway report로 attempt 메타데이터를 기록하지만, snapshot을 주문 상태로 해석하지 않는다.
 
 ---
 
@@ -370,10 +373,12 @@ Order Service 처리:
 
 Recovery Service 처리:
 
-1. attempt deadline 안에 `OrderReconciliationResolved` 또는 `OrderReconciliationFailed`를 받지 못하면 attempt를 `TIMED_OUT`으로 처리한다.
-2. retry 가능하면 새 attempt를 생성한다.
-3. retry 한도 초과 시 job을 `FAILED`로 변경한다.
-4. `ReconciliationJobFailed` 이벤트를 Order Service에 발행한다.
+1. `StatusQueryAttemptReported`를 수신하면 `wireMessageId`, Gateway 처리 결과, snapshot 요약 상태, 오류 정보를 attempt에 기록한다.
+2. Gateway가 `TIMED_OUT` 또는 `FAILED`를 보고하면 attempt를 `TIMED_OUT` 또는 `FAILED`로 처리한다.
+3. attempt deadline 안에 `StatusQueryAttemptReported`도, `OrderReconciliationResolved` 또는 `OrderReconciliationFailed`도 받지 못하면 attempt를 `TIMED_OUT`으로 처리한다.
+4. retry 가능하면 새 attempt를 생성한다.
+5. retry 한도 초과 시 job을 `FAILED`로 변경한다.
+6. `ReconciliationJobFailed` 이벤트를 Order Service에 발행한다.
 
 Order Service 처리:
 
@@ -532,14 +537,18 @@ stale 감지 후 Order Service는 `OrderReconciliationRequested(triggerType=STAL
 
 장 마감 이후에도 DAY 주문이 terminal 상태로 수렴하지 않으면 reconciliation 대상이다.
 
+Phase 1에서 장 마감 판단은 별도 Market Service가 아니라 Order Service가 보유한 단순 시장 상태 `OPEN` / `CLOSED` runtime/config state를 기준으로 한다.
+이 상태는 테스트/운영용 admin endpoint 또는 내부 설정으로 전환할 수 있다.
+
 처리:
 
-1. 대상 주문 row lock
-2. `tif = DAY` 여부 확인
-3. non-terminal 상태 여부 확인
-4. 기존 주문 상태 유지
-5. `reconciliationStatus = PENDING`
-6. `OrderReconciliationRequested(triggerType=EOD_NON_TERMINAL)` 발행
+1. Order Service의 시장 상태가 `CLOSED`인지 확인
+2. 대상 주문 row lock
+3. `tif = DAY` 여부 확인
+4. non-terminal 상태 여부 확인
+5. 기존 주문 상태 유지
+6. `reconciliationStatus = PENDING`
+7. `OrderReconciliationRequested(triggerType=EOD_NON_TERMINAL)` 발행
 
 EOD sweep은 상태를 임의로 `EXPIRED`로 바꾸지 않는다.
 실제 `EXPIRED` 반영은 브로커 snapshot 또는 `BrokerOrderExpired` 이벤트를 통해 Order Service 상태머신이 수행한다.
@@ -573,15 +582,20 @@ Recovery Service는 실행 대상 job을 claim하고 상태조회 attempt를 생
 
 ---
 
-## 11.11.3 attempt 완료
+## 11.11.3 attempt report 및 완료
 
-Recovery Service는 Order Service의 결과 이벤트를 기준으로 attempt를 완료한다.
+Recovery Service는 Gateway의 `StatusQueryAttemptReported`로 상태조회 attempt 메타데이터를 갱신한다.
+최종 attempt 완료는 Order Service의 reconciliation 결과 이벤트 또는 attempt deadline 정책을 기준으로 판단한다.
 
-| 이벤트                           | attempt 처리  | job 처리                                |
-| ----------------------------- | ----------- | ------------------------------------- |
-| `OrderReconciliationResolved` | `RESOLVED`  | `SUCCEEDED`                           |
-| `OrderReconciliationFailed`   | `FAILED`    | `FAILED`                              |
-| 결과 이벤트 deadline 초과            | `TIMED_OUT` | retry 가능하면 `PENDING`, 한도 초과면 `FAILED` |
+| 입력                                                     | attempt 처리                         | job 처리                                |
+| ------------------------------------------------------ | ---------------------------------- | ------------------------------------- |
+| `StatusQueryAttemptReported(gatewayResult=SENT)`        | `REQUESTED` 유지, `wireMessageId` 기록 | 변경 없음                                |
+| `StatusQueryAttemptReported(gatewayResult=SNAPSHOT_RECEIVED)` | snapshot 요약 상태 기록, 결과 이벤트 대기       | 변경 없음                                |
+| `StatusQueryAttemptReported(gatewayResult=TIMED_OUT)`   | `TIMED_OUT`                        | retry 가능하면 `PENDING`, 한도 초과면 `FAILED` |
+| `StatusQueryAttemptReported(gatewayResult=FAILED/MALFORMED_RESPONSE)` | `FAILED`                           | retry 가능하면 `PENDING`, 한도 초과면 `FAILED` |
+| `OrderReconciliationResolved`                           | `RESOLVED`                         | `SUCCEEDED`                           |
+| `OrderReconciliationFailed`                             | `FAILED`                           | `FAILED`                              |
+| attempt deadline 초과                                      | `TIMED_OUT`                        | retry 가능하면 `PENDING`, 한도 초과면 `FAILED` |
 
 ---
 

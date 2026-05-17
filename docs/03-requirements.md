@@ -423,6 +423,9 @@ traceId
 * 주문 타입은 `LIMIT`만 지원한다.
 * TIF는 `DAY`로 고정한다.
 * 시장 상태는 `OPEN`, `CLOSED`만 지원한다.
+* Phase 1에서는 별도 Market Service를 두지 않는다.
+* 시장 상태 `OPEN` / `CLOSED`는 Order Service가 주문 생성 검증과 EOD sweep 판단을 위해 보유하는 단순 runtime/config state로 둔다.
+* 시장 상태 전환은 테스트/운영용 admin endpoint 또는 내부 설정으로 수행한다.
 * 수량은 정수 수량만 지원한다.
 * 1차 범위에서는 단일 브로커만 지원한다.
 * Phase 1의 체결 모델은 수량 중심으로 단순화한다.
@@ -497,9 +500,12 @@ traceId
 * 지정가
 * 누적 체결 수량
 * 잔여 수량
-* 브로커 주문 ID
 * reconciliation 상태
 * 생성/수정/종결 시각
+* 취소 진행 여부
+
+브로커 코드, 브로커 주문 ID, 전문 송수신 상세는 사용자-facing 기본 조회 정보에 포함하지 않는다.
+이 정보는 Broker Gateway와 운영 추적 영역에서 사용한다.
 
 ### 수용 기준
 
@@ -534,6 +540,7 @@ traceId
 * 부분체결 상태에서 취소 요청이 들어오면 이미 체결된 수량은 유지하고 미체결 잔량만 취소 대상으로 삼아야 한다.
 * 취소 요청 이후 브로커 응답에 따라 `CANCELED`, `FILLED`, `PARTIALLY_FILLED`, `UNKNOWN` 등으로 수렴할 수 있어야 한다.
 * 동일 취소 요청이 중복으로 들어와도 중복 취소 전문이 전송되면 안 된다.
+* 취소 요청은 주문이 속한 account/user 범위 안에서만 허용되어야 한다.
 
 ---
 

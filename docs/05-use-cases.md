@@ -103,7 +103,7 @@ flowchart LR
 | `UC-014` | 중복 브로커 이벤트 처리                            | External Broker Simulator                    | 중복 이벤트가 주문 상태를 오염시키지 않게 한다                                  |
 | `UC-015` | 순서 역전 브로커 이벤트 처리                         | External Broker Simulator                    | out-of-order 이벤트에도 상태가 수렴하게 한다                              |
 | `UC-016` | Malformed 전문 처리                          | External Broker Simulator                    | 형식 오류 전문을 상태 변경과 분리하고 필요 시 복구 대상으로 만든다                      |
-| `UC-017` | Stale Order Detection and Reconciliation | Recovery Service                             | 이벤트 유실로 non-terminal에 남은 주문을 탐지하고 상태조회로 수렴시킨다               |
+| `UC-017` | Stale Order Detection and Reconciliation | Order Service / Recovery Service             | Order Service가 non-terminal 주문을 탐지하고 Recovery Service가 상태조회 workflow를 수행한다 |
 | `UC-018` | 주문 장애 추적                                 | Operations Engineer                          | 주문 상태 변화, 브로커 상호작용, reconciliation 이력을 추적한다                 |
 
 ---
@@ -126,6 +126,7 @@ flowchart LR
 ### 사전 조건
 
 * 시장 상태는 `OPEN`이다.
+* Phase 1에서 시장 상태는 Order Service가 보유한 단순 `OPEN` / `CLOSED` runtime/config state다.
 * 주문 타입은 `LIMIT`이다.
 * TIF는 `DAY`로 고정된다.
 * 사용자는 `clientOrderId`를 포함해 주문 생성 요청을 보낸다.
@@ -133,13 +134,14 @@ flowchart LR
 ### 기본 흐름
 
 1. 사용자가 종목, 매수/매도, 수량, 지정가를 입력한다.
-2. 시스템은 주문 생성 요청의 유효성을 검증한다.
-3. 시스템은 `accountId + clientOrderId` 기준으로 기존 `PLACE` instruction이 있는지 확인한다.
-4. 중복이 아니면 `PLACE` instruction을 생성한다.
-5. 시스템은 내부 `orderId`를 생성하고 주문 aggregate를 만든다.
-6. 주문 상태를 `PENDING_ACK`로 시작한다.
-7. 외부 브로커 전송 요청을 생성한다.
-8. 사용자에게 주문 생성 접수 결과를 반환한다.
+2. 시스템은 Order Service의 현재 시장 상태가 `OPEN`인지 확인한다.
+3. 시스템은 주문 생성 요청의 유효성을 검증한다.
+4. 시스템은 `accountId + clientOrderId` 기준으로 기존 `PLACE` instruction이 있는지 확인한다.
+5. 중복이 아니면 `PLACE` instruction을 생성한다.
+6. 시스템은 내부 `orderId`를 생성하고 주문 aggregate를 만든다.
+7. 주문 상태를 `PENDING_ACK`로 시작한다.
+8. 외부 브로커 전송 요청을 생성한다.
+9. 사용자에게 주문 생성 접수 결과를 반환한다.
 
 ### 사후 조건
 
@@ -388,13 +390,14 @@ Broker Gateway가 브로커 전문을 canonical broker event로 변환하고, Or
 ### 기본 흐름
 
 1. 사용자가 주문 취소를 요청한다.
-2. 시스템은 주문 상태가 취소 가능한지 검증한다.
-3. 시스템은 `clientCancelRequestId` 기준으로 중복 취소 요청인지 확인한다.
-4. 이미 active `CANCEL` instruction이 있는지 확인한다.
-5. 취소 가능하면 `CANCEL` instruction을 생성한다.
-6. 주문 상태를 `PENDING_CANCEL`로 전환한다.
-7. 브로커 취소 command를 생성한다.
-8. 사용자에게 취소 요청 접수 결과를 반환한다.
+2. 시스템은 요청의 `accountId`가 대상 주문의 계좌 범위와 일치하는지 확인한다.
+3. 시스템은 주문 상태가 취소 가능한지 검증한다.
+4. 시스템은 `clientCancelRequestId` 기준으로 중복 취소 요청인지 확인한다.
+5. 이미 active `CANCEL` instruction이 있는지 확인한다.
+6. 취소 가능하면 `CANCEL` instruction을 생성한다.
+7. 주문 상태를 `PENDING_CANCEL`로 전환한다.
+8. 브로커 취소 command를 생성한다.
+9. 사용자에게 취소 요청 접수 결과를 반환한다.
 
 ### 사후 조건
 
@@ -408,6 +411,7 @@ Broker Gateway가 브로커 전문을 canonical broker event로 변환하고, Or
 | ------------------------------------ | -------------------------------------- |
 | 주문 상태가 `UNKNOWN`                     | 취소 요청 거절                               |
 | 이미 terminal 상태                       | 취소 요청 거절                               |
+| 요청 `accountId`가 대상 주문과 일치하지 않음        | 접근 거부                                  |
 | 동일 `clientCancelRequestId` 재전송       | 기존 `CANCEL` instruction 상태 반환          |
 | 다른 `clientCancelRequestId`로 중복 취소 요청 | active `CANCEL` instruction이 있으면 충돌 처리 |
 
@@ -531,6 +535,7 @@ CANCEL instruction = COMPLETED
 ### 사전 조건
 
 시장 상태가 `CLOSED`로 전환된다.
+Phase 1에서 이 전환은 Order Service의 단순 시장 상태 runtime/config state 변경으로 표현한다.
 대상 주문 상태가 다음 중 하나다.
 
 * `LIVE`
@@ -539,13 +544,20 @@ CANCEL instruction = COMPLETED
 
 ### 기본 흐름
 
-1. Broker Simulator가 시장 마감 시나리오를 실행한다.
-2. Broker Simulator가 살아 있는 DAY 주문에 대해 만료 전문을 보낸다.
-3. Broker Gateway가 이를 canonical `BrokerOrderExpired` event로 변환한다.
-4. Order Service가 주문을 `EXPIRED`로 종결한다.
-5. `leavesQty = 0`으로 반영한다.
-6. active `CANCEL` instruction이 있으면 `NOT_APPLIED`로 정리한다.
-7. 사용자에게 만료 상태를 전달한다.
+1. Order Service의 시장 상태가 `CLOSED`로 전환된다.
+2. Broker Simulator가 시장 마감 시나리오를 실행한다.
+3. Broker Simulator가 살아 있는 DAY 주문에 대해 만료 전문을 보낸다.
+4. Broker Gateway가 이를 canonical `BrokerOrderExpired` event로 변환한다.
+5. Order Service가 주문을 `EXPIRED`로 종결한다.
+6. `leavesQty = 0`으로 반영한다.
+7. active `CANCEL` instruction이 있으면 `NOT_APPLIED`로 정리한다.
+8. 사용자에게 만료 상태를 전달한다.
+
+### 보정 흐름: EOD reconciliation sweep
+
+Broker Simulator의 `EXPR` 이벤트가 유실되거나 식별 불가능한 malformed 전문으로 폐기될 수 있다.
+따라서 Order Service는 시장 상태가 `CLOSED`인 상태에서 non-terminal `DAY` 주문을 탐지하면 `EOD_NON_TERMINAL` reconciliation을 요청한다.
+EOD sweep은 주문을 직접 `EXPIRED`로 바꾸지 않고, 브로커 상태조회 snapshot 또는 `BrokerOrderExpired` 이벤트를 통해 상태를 수렴시킨다.
 
 ### 사후 조건
 
@@ -578,7 +590,8 @@ CANCEL instruction = COMPLETED
 3. Broker Gateway가 command outcome unknown event를 생성한다.
 4. Order Service가 주문을 `UNKNOWN`으로 전환한다.
 5. `reconciliationStatus = PENDING`으로 설정한다.
-6. Recovery Service가 reconciliation 대상임을 감지한다.
+6. Order Service가 `OrderReconciliationRequested` 이벤트를 발행한다.
+7. Recovery Service가 이 이벤트를 수신해 reconciliation job을 생성한다.
 
 ### 사후 조건
 
@@ -610,10 +623,12 @@ CANCEL instruction = COMPLETED
 2. Recovery Service가 상태조회 command를 생성한다.
 3. Broker Gateway가 상태조회 전문을 브로커로 전송한다.
 4. Broker Simulator가 상태 snapshot을 반환한다.
-5. Broker Gateway가 snapshot을 canonical `BrokerOrderStatusSnapshot` event로 변환한다.
-6. Order Service가 snapshot을 해석한다.
-7. 주문 상태를 적절한 상태로 수렴시킨다.
-8. `reconciliationStatus = RESOLVED` 또는 `FAILED`로 변경한다.
+5. Broker Gateway가 snapshot을 canonical `BrokerOrderStatusSnapshot` event로 변환해 Order Service에 전달한다.
+6. Broker Gateway가 `StatusQueryAttemptReported` 이벤트로 상태조회 전문 ID와 Gateway 처리 결과를 Recovery Service에 보고한다.
+7. Order Service가 snapshot을 해석한다.
+8. 주문 상태를 적절한 상태로 수렴시킨다.
+9. `reconciliationStatus = RESOLVED` 또는 `FAILED`로 변경한다.
+10. Recovery Service는 `StatusQueryAttemptReported`와 Order Service의 reconciliation 결과 이벤트를 기준으로 attempt와 job 이력을 종료한다.
 
 ### snapshot별 처리
 
@@ -651,7 +666,7 @@ CANCEL instruction = COMPLETED
 2. 브로커 snapshot이 `ACCEPTED` 또는 `PARTIAL`로 반환된다.
 3. Order Service는 주문을 `PENDING_CANCEL`로 전환한다.
 4. active `CANCEL` instruction 상태는 `REQUESTED`로 유지한다.
-5. 시스템은 새로운 cancel command를 발행한다.
+5. Order Service는 새로운 `CancelOrderCommand`를 발행한다.
 6. 사용자는 취소 버튼을 다시 누를 필요가 없다.
 
 ### 예외 흐름
@@ -808,11 +823,11 @@ Malformed 처리의 정상 종료는 다음 중 하나다.
 
 ### Primary Actor
 
-`Recovery Service`
+`Order Service`, `Recovery Service`
 
 ### 목적
 
-브로커 이벤트 유실 또는 식별 불가능한 malformed 전문으로 인해 내부 주문이 non-terminal 상태에 머무르는 경우, 시스템이 이를 탐지하고 상태조회 기반 reconciliation을 수행한다.
+브로커 이벤트 유실 또는 식별 불가능한 malformed 전문으로 인해 내부 주문이 non-terminal 상태에 머무르는 경우, Order Service가 이를 탐지하고 Recovery Service가 상태조회 기반 reconciliation workflow를 수행한다.
 
 ### 대상 상태
 
@@ -832,13 +847,14 @@ Malformed 처리의 정상 종료는 다음 중 하나다.
 
 ### 기본 흐름
 
-1. detector가 stale order를 탐지한다.
-2. 시스템은 reconciliation job을 생성한다.
-3. Broker Gateway를 통해 상태조회 전문을 보낸다.
-4. Broker Simulator가 상태 snapshot을 반환한다.
-5. Broker Gateway가 snapshot을 canonical event로 변환한다.
-6. Order Service가 snapshot에 따라 상태를 수렴시킨다.
-7. 수렴 결과를 기록한다.
+1. Order Service의 detector가 stale order 또는 EOD non-terminal 주문을 탐지한다.
+2. Order Service가 `OrderReconciliationRequested` 이벤트를 발행한다.
+3. Recovery Service는 reconciliation job을 생성한다.
+4. Broker Gateway를 통해 상태조회 전문을 보낸다.
+5. Broker Simulator가 상태 snapshot을 반환한다.
+6. Broker Gateway가 snapshot을 canonical event로 변환한다.
+7. Order Service가 snapshot에 따라 상태를 수렴시킨다.
+8. Recovery Service는 결과 이벤트를 기준으로 job을 종료하고, 수렴 결과를 기록한다.
 
 ### 대표 시나리오: terminal event 유실
 
