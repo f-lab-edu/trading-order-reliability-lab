@@ -110,6 +110,66 @@
 * Testcontainers
 * Micrometer / Actuator
 
+## 로컬 개발 환경
+
+### 사전 준비
+
+* Java 21
+* Docker / Docker Compose
+* Gradle Wrapper
+
+### 빌드
+
+```bash
+./gradlew clean build
+```
+
+### 기본 개발 인프라
+
+프로젝트의 기본 로컬 개발 환경은 MySQL 8.4와 Kafka 3 brokers + 3 controllers KRaft isolated mode로 구성합니다.
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+기본 접속 정보는 아래와 같습니다.
+
+| 구성 요소 | 접속 정보 |
+| --- | --- |
+| MySQL | `localhost:3306` |
+| MySQL root 계정 | `root` / `root` |
+| MySQL application 계정 | `trading_app` / `trading_app` |
+| Order DB | `order_db` |
+| Broker Gateway DB | `gateway_db` |
+| Recovery DB | `recovery_db` |
+| Kafka bootstrap servers | `localhost:19092,localhost:29092,localhost:39092` |
+
+Spring 애플리케이션은 로컬 실행 시 `local` profile을 사용합니다.
+
+```bash
+./gradlew :apps:order-service:bootRun --args='--spring.profiles.active=local'
+./gradlew :apps:broker-gateway-service:bootRun --args='--spring.profiles.active=local'
+./gradlew :apps:recovery-service:bootRun --args='--spring.profiles.active=local'
+./gradlew :apps:broker-simulator:bootRun --args='--spring.profiles.active=local'
+```
+
+### 초기 Kafka 연결 테스트
+
+Kafka 연결 자체만 빠르게 확인할 때는 1-node KRaft 구성을 사용합니다.
+
+```bash
+docker compose -f docker/docker-compose.kafka-1node.yml up -d
+```
+
+1-node Kafka의 bootstrap server는 `localhost:19092`입니다. 이 구성은 초기 연결 테스트와 lightweight CI 성격의 검증에 사용하고, partition replication, ISR 변화, consumer group rebalance, `acks=all` 기반 발행 신뢰성 검증은 기본 3 brokers + 3 controllers 구성을 사용합니다.
+
+### 인프라 종료
+
+```bash
+docker compose -f docker/docker-compose.yml down -v
+docker compose -f docker/docker-compose.kafka-1node.yml down -v
+```
+
 ## 문서
 
 상세 설계는 아래 문서에서 관리합니다.
@@ -171,4 +231,7 @@ trading-order-reliability-lab/
 
   docker/
     docker-compose.yml
+    docker-compose.kafka-1node.yml
+    mysql/
+      init/
 ```

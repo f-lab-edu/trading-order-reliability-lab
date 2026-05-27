@@ -1,0 +1,8 @@
+CREATE DATABASE IF NOT EXISTS order_db CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE DATABASE IF NOT EXISTS gateway_db CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE DATABASE IF NOT EXISTS recovery_db CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+GRANT ALL PRIVILEGES ON order_db.* TO 'trading_app'@'%';
+GRANT ALL PRIVILEGES ON gateway_db.* TO 'trading_app'@'%';
+GRANT ALL PRIVILEGES ON recovery_db.* TO 'trading_app'@'%';
+FLUSH PRIVILEGES;
