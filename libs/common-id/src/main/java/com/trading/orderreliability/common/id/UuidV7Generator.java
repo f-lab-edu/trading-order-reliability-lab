@@ -7,8 +7,17 @@ import java.util.UUID;
 
 public class UuidV7Generator {
 
+    private static final long TIMESTAMP_MASK = 0x0000_FFFF_FFFF_FFFFL;
+    private static final long VERSION_7_BITS = 0x0000_0000_0000_7000L;
+    private static final long RAND_A_MASK = 0x0000_0000_0000_0FFFL;
+    private static final long RAND_B_MASK = 0x3FFF_FFFF_FFFF_FFFFL;
+    private static final long VARIANT_BITS = 0x8000_0000_0000_0000L;
+
     private final Clock clock;
     private final SecureRandom random;
+    private long lastTimestampMillis = -1L;
+    private long randomHigh12;
+    private long randomLow62;
 
     public UuidV7Generator() {
         this(Clock.systemUTC(), new SecureRandom());
@@ -19,30 +28,43 @@ public class UuidV7Generator {
         this.random = Objects.requireNonNull(random, "random must not be null");
     }
 
-    public UUID generate() {
+    public synchronized UUID generate() {
         long timestampMillis = clock.millis();
-        byte[] randomBytes = new byte[10];
-        random.nextBytes(randomBytes);
+        if (timestampMillis > lastTimestampMillis) {
+            lastTimestampMillis = timestampMillis;
+            reseedRandom();
+        } else {
+            incrementRandom();
+        }
 
         long mostSignificantBits = 0L;
-        mostSignificantBits |= (timestampMillis & 0x0000_FFFF_FFFF_FFFFL) << 16;
-        mostSignificantBits |= 0x0000_0000_0000_7000L;
-        mostSignificantBits |= Byte.toUnsignedLong(randomBytes[0]) << 4;
-        mostSignificantBits |= Byte.toUnsignedLong(randomBytes[1]) >>> 4;
+        mostSignificantBits |= (lastTimestampMillis & TIMESTAMP_MASK) << 16;
+        mostSignificantBits |= VERSION_7_BITS;
+        mostSignificantBits |= randomHigh12 & RAND_A_MASK;
 
-        long leastSignificantBits = 0L;
-        leastSignificantBits |= (Byte.toUnsignedLong(randomBytes[1]) & 0x0FL) << 60;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[2]) << 52;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[3]) << 44;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[4]) << 36;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[5]) << 28;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[6]) << 20;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[7]) << 12;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[8]) << 4;
-        leastSignificantBits |= Byte.toUnsignedLong(randomBytes[9]) >>> 4;
-        leastSignificantBits &= 0x3FFF_FFFF_FFFF_FFFFL;
-        leastSignificantBits |= 0x8000_0000_0000_0000L;
+        long leastSignificantBits = VARIANT_BITS | (randomLow62 & RAND_B_MASK);
 
         return new UUID(mostSignificantBits, leastSignificantBits);
+    }
+
+    private void reseedRandom() {
+        randomHigh12 = random.nextInt(1 << 12);
+        randomLow62 = random.nextLong() & RAND_B_MASK;
+    }
+
+    private void incrementRandom() {
+        if (randomLow62 < RAND_B_MASK) {
+            randomLow62++;
+            return;
+        }
+
+        randomLow62 = 0L;
+        if (randomHigh12 < RAND_A_MASK) {
+            randomHigh12++;
+            return;
+        }
+
+        lastTimestampMillis++;
+        reseedRandom();
     }
 }

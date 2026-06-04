@@ -60,6 +60,25 @@ class UuidV7GeneratorTest {
     }
 
     @Test
+    @DisplayName("같은 millisecond 안에서 생성된 UUID v7도 UUID 자연 순서와 BINARY(16) byte 순서에서 증가한다")
+    void 같은_millisecond_안에서_생성된_uuid_v7도_uuid와_binary16_정렬에서_모두_증가한다() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-06-04T00:00:00.123Z"));
+        UuidV7Generator generator = new UuidV7Generator(clock, new SecureRandom());
+
+        UUID previous = generator.generate();
+        for (int i = 1; i <= 10_000; i++) {
+            UUID current = generator.generate();
+
+            assertThat(current).isGreaterThan(previous);
+            assertThat(Arrays.compareUnsigned(UuidBytes.toBytes(current), UuidBytes.toBytes(previous)))
+                    .isGreaterThan(0);
+            assertThat(extractTimestampMillis(current)).isEqualTo(clock.millis());
+
+            previous = current;
+        }
+    }
+
+    @Test
     @DisplayName("UUID v7은 BINARY(16)으로 저장했다가 읽어도 동일한 UUID로 복원된다")
     void uuid_v7은_binary16으로_저장했다가_읽어도_동일하게_복원된다() {
         UuidV7Generator generator = new UuidV7Generator(
