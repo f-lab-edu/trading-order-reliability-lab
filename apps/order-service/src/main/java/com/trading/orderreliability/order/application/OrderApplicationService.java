@@ -69,10 +69,6 @@ public class OrderApplicationService {
 
     @Transactional
     public PlaceOrderResult createOrder(PlaceOrderCommand command) {
-        if (properties.marketState() != MarketState.OPEN) {
-            throw new OrderRequestRejectedException("MARKET_CLOSED", "Market is closed");
-        }
-
         PlaceOrderIdempotencyPayload idempotencyPayload = PlaceOrderIdempotencyPayload.from(command);
         String payloadJson = hashingService.canonicalJson(idempotencyPayload);
         String payloadHash = hashingService.sha256(payloadJson);
@@ -90,6 +86,10 @@ public class OrderApplicationService {
             Order existingOrder = orderRepository.findById(instruction.orderId())
                     .orElseThrow(() -> new OrderNotFoundException(instruction.orderId().value()));
             return new PlaceOrderResult(existingOrder, false);
+        }
+
+        if (properties.marketState() != MarketState.OPEN) {
+            throw new OrderRequestRejectedException("MARKET_CLOSED", "Market is closed");
         }
 
         Instant now = clock.instant();
