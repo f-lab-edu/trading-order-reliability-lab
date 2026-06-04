@@ -125,9 +125,7 @@ public class OrderApplicationService {
         try {
             instructionRepository.insert(instruction, payloadJson);
         } catch (DuplicateKeyException ignored) {
-            return Objects.requireNonNull(duplicateResolutionTransaction.execute(
-                    status -> resolveConcurrentPlaceRetry(command, payloadHash)
-            ));
+            return resolveConcurrentPlaceRetry(command, payloadHash);
         }
         orderRepository.insert(order);
         eventRepository.insert(
@@ -157,18 +155,20 @@ public class OrderApplicationService {
     }
 
     private PlaceOrderResult resolveConcurrentPlaceRetry(PlaceOrderCommand command, String payloadHash) {
-        OrderInstruction instruction = instructionRepository.findByIdempotencyKey(
-                        command.accountId().value(),
-                        InstructionType.PLACE,
-                        command.clientOrderId()
-                )
-                .orElseThrow(() -> new IdempotencyConflictException("PLACE instruction key was concurrently inserted but is not visible"));
-        if (!instruction.requestPayloadHash().equals(payloadHash)) {
-            throw new IdempotencyConflictException("PLACE instruction payload does not match previous request");
-        }
-        Order existingOrder = orderRepository.findById(instruction.orderId())
-                .orElseThrow(() -> new OrderNotFoundException(instruction.orderId().value()));
-        return new PlaceOrderResult(existingOrder, false);
+        return Objects.requireNonNull(duplicateResolutionTransaction.execute(status -> {
+            OrderInstruction instruction = instructionRepository.findByIdempotencyKey(
+                            command.accountId().value(),
+                            InstructionType.PLACE,
+                            command.clientOrderId()
+                    )
+                    .orElseThrow(() -> new IdempotencyConflictException("PLACE instruction key was concurrently inserted but is not visible"));
+            if (!instruction.requestPayloadHash().equals(payloadHash)) {
+                throw new IdempotencyConflictException("PLACE instruction payload does not match previous request");
+            }
+            Order existingOrder = orderRepository.findById(instruction.orderId())
+                    .orElseThrow(() -> new OrderNotFoundException(instruction.orderId().value()));
+            return new PlaceOrderResult(existingOrder, false);
+        }));
     }
 
     @Transactional(readOnly = true)
@@ -192,7 +192,7 @@ public class OrderApplicationService {
             throw new OrderAccessDeniedException(orderIdValue);
         }
 
-        CancelOrderIdempotencyPayload idempotencyPayload = CancelOrderIdempotencyPayload.from(command);
+        CancelOrderIdempotencyPayload idempotencyPayload = CancelOrderIdempotencyPayload.from(orderId, command);
         String payloadJson = hashingService.canonicalJson(idempotencyPayload);
         String payloadHash = hashingService.sha256(payloadJson);
         Optional<OrderInstruction> existingCancelByKey = instructionRepository.findByIdempotencyKey(
@@ -243,8 +243,12 @@ public class OrderApplicationService {
                 null
         );
 
+        try {
+            instructionRepository.insert(instruction, payloadJson);
+        } catch (DuplicateKeyException ignored) {
+            return resolveConcurrentCancelRetry(orderId, command, payloadHash);
+        }
         orderRepository.updateState(nextOrder);
-        instructionRepository.insert(instruction, payloadJson);
         eventRepository.insert(
                 uuidGenerator.generate(),
                 orderId,
@@ -269,6 +273,30 @@ public class OrderApplicationService {
         );
 
         return new CancelOrderResult(nextOrder, instruction);
+    }
+
+    private CancelOrderResult resolveConcurrentCancelRetry(
+            OrderId orderId,
+            CancelOrderCommand command,
+            String payloadHash
+    ) {
+        return Objects.requireNonNull(duplicateResolutionTransaction.execute(status -> {
+            OrderInstruction instruction = instructionRepository.findByIdempotencyKey(
+                            command.accountId().value(),
+                            InstructionType.CANCEL,
+                            command.clientCancelRequestId()
+                    )
+                    .orElseThrow(() -> new IdempotencyConflictException("CANCEL instruction key was concurrently inserted but is not visible"));
+            if (!instruction.orderId().equals(orderId)) {
+                throw new IdempotencyConflictException("CANCEL instruction key is already used for another order");
+            }
+            if (!instruction.requestPayloadHash().equals(payloadHash)) {
+                throw new IdempotencyConflictException("CANCEL instruction payload does not match previous request");
+            }
+            Order existingOrder = orderRepository.findById(orderId)
+                    .orElseThrow(() -> new OrderNotFoundException(orderId.value()));
+            return new CancelOrderResult(existingOrder, instruction);
+        }));
     }
 
     private record PlaceOrderIdempotencyPayload(
@@ -299,12 +327,14 @@ public class OrderApplicationService {
     }
 
     private record CancelOrderIdempotencyPayload(
+            String orderId,
             String accountId,
             String clientCancelRequestId
     ) {
 
-        static CancelOrderIdempotencyPayload from(CancelOrderCommand command) {
+        static CancelOrderIdempotencyPayload from(OrderId orderId, CancelOrderCommand command) {
             return new CancelOrderIdempotencyPayload(
+                    orderId.value().toString(),
                     command.accountId().value(),
                     command.clientCancelRequestId()
             );
