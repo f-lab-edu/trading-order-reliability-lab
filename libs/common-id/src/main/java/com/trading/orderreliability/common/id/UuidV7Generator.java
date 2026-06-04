@@ -1,12 +1,10 @@
-package com.trading.orderreliability.order.common;
-
-import org.springframework.stereotype.Component;
+package com.trading.orderreliability.common.id;
 
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.util.Objects;
 import java.util.UUID;
 
-@Component
 public class UuidV7Generator {
 
     private final Clock clock;
@@ -16,9 +14,9 @@ public class UuidV7Generator {
         this(Clock.systemUTC(), new SecureRandom());
     }
 
-    UuidV7Generator(Clock clock, SecureRandom random) {
-        this.clock = clock;
-        this.random = random;
+    public UuidV7Generator(Clock clock, SecureRandom random) {
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.random = Objects.requireNonNull(random, "random must not be null");
     }
 
     public UUID generate() {

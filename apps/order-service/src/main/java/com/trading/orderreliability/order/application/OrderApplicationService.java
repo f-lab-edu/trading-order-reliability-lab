@@ -3,7 +3,7 @@ package com.trading.orderreliability.order.application;
 import com.trading.orderreliability.order.adapter.out.persistence.OrderEventRepository;
 import com.trading.orderreliability.order.adapter.out.persistence.OrderInstructionRepository;
 import com.trading.orderreliability.order.adapter.out.persistence.TradeOrderRepository;
-import com.trading.orderreliability.order.common.UuidV7Generator;
+import com.trading.orderreliability.common.id.UuidV7Generator;
 import com.trading.orderreliability.order.domain.model.AccountId;
 import com.trading.orderreliability.order.domain.model.InstructionType;
 import com.trading.orderreliability.order.domain.model.Order;

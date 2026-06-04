@@ -1,4 +1,4 @@
-package com.trading.orderreliability.order.common;
+package com.trading.orderreliability.common.id;
 
 import java.nio.ByteBuffer;
 import java.util.UUID;
