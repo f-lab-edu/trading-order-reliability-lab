@@ -2,5 +2,7 @@ server:
   port: 0
 
 spring:
+  flyway:
+    enabled: true
   kafka:
     bootstrap-servers: localhost:19092
