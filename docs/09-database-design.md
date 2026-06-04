@@ -148,6 +148,10 @@ API 레벨에서는 사용자 의미에 맞는 이름을 사용한다.
 
 즉, DB 내부에서는 사용자 instruction 멱등성 키를 `client_instruction_id`로 일반화한다.
 
+취소 요청의 API path `orderId`는 멱등성 unique key 자체에는 포함하지 않는다.
+대신 `order_instruction.order_id`에 대상 주문으로 저장하고, 같은 취소 멱등성 키가 동일 주문에 대한 재시도인지 확인하기 위한 `request_payload_hash` 입력에 포함한다.
+따라서 같은 `account_id + CANCEL + clientCancelRequestId`가 다른 `order_id`에 재사용되면 멱등성 충돌로 처리한다.
+
 ---
 
 ## 9.3.3 주문 ID 매핑 관계

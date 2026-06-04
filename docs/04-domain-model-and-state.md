@@ -465,7 +465,8 @@ clientInstructionId = clientOrderId
 
 ## DR-003. 취소 instruction 멱등성
 
-동일 주문에 대해 동일 `clientCancelRequestId`로 동일 payload가 다시 들어오면 기존 취소 instruction 결과를 반환한다.
+취소 instruction도 주문 생성 instruction과 같은 내부 멱등성 모델을 사용한다.
+동일 `accountId + CANCEL + clientCancelRequestId`와 동일 `orderId` 및 동일 payload가 다시 들어오면 기존 취소 instruction 결과를 반환한다.
 
 도메인 내부적으로는 이를 다음처럼 해석한다.
 
@@ -473,6 +474,10 @@ clientInstructionId = clientOrderId
 instructionType = CANCEL
 clientInstructionId = clientCancelRequestId
 ```
+
+`orderId`는 unique key 자체에는 포함하지 않는다.
+다만 취소 대상 주문을 식별하고 같은 `clientCancelRequestId`가 동일 주문에 대한 재시도인지 검증하는 payload hash에는 포함한다.
+따라서 같은 계좌에서 같은 `clientCancelRequestId`를 다른 주문 취소에 재사용하면 충돌로 처리한다.
 
 다른 `clientCancelRequestId`로 새 취소 요청이 들어왔더라도, 이미 active `CANCEL` instruction이 있으면 충돌로 처리한다.
 즉, 하나의 주문에는 동시에 하나의 active `CANCEL` instruction만 허용한다.

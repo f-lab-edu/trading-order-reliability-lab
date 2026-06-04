@@ -111,24 +111,28 @@ accountId + clientOrderId
 
 이때 같은 취소 요청을 중복 생성하거나, 브로커에 중복 취소 전문을 보내면 안 된다.
 
-고유성은 다음 기준으로 본다.
+API 의미상 취소 요청은 path의 `orderId`로 대상 주문을 지정하고, `clientCancelRequestId`로 같은 취소 요청의 재시도를 식별한다.
 
-```text
-orderId + clientCancelRequestId
-```
-
-또는 내부적으로는 사용자 instruction 관점에서 다음과 같이 일반화할 수 있다.
+내부 멱등성 고유성은 주문 생성과 같은 instruction 모델로 일반화해 다음 기준으로 본다.
 
 ```text
 accountId + instructionType + clientInstructionId
 ```
 
-이때:
+이때 취소 요청은 다음처럼 해석한다.
 
-* 주문 생성 요청은 `instructionType = PLACE`, `clientInstructionId = clientOrderId`
-* 취소 요청은 `instructionType = CANCEL`, `clientInstructionId = clientCancelRequestId`
+```text
+instructionType = CANCEL
+clientInstructionId = clientCancelRequestId
+```
 
-로 해석할 수 있다.
+`orderId`는 unique key 자체에는 포함하지 않지만, 취소 대상 주문을 식별하고 같은 `clientCancelRequestId`가 동일 주문에 대한 재시도인지 검증하는 payload hash에 포함한다.
+
+정리하면:
+
+* 동일 `accountId + CANCEL + clientCancelRequestId`와 동일 `orderId` 및 동일 payload가 다시 들어오면 기존 취소 instruction 결과를 반환한다.
+* 동일 `accountId + CANCEL + clientCancelRequestId`지만 `orderId` 또는 payload가 다르면 충돌로 처리한다.
+* 동일 주문에 다른 `clientCancelRequestId`가 들어왔더라도 active `CANCEL` instruction이 있으면 충돌로 처리한다.
 
 이 일반화는 내부 설계 개념이며, API에서는 사용자 의미에 맞게 `clientOrderId`, `clientCancelRequestId`라는 이름을 유지한다.
 
