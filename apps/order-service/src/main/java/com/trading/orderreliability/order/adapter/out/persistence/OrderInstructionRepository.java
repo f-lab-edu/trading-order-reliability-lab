@@ -8,64 +8,63 @@ import com.trading.orderreliability.order.domain.model.OrderInstruction;
 import com.trading.orderreliability.order.domain.model.OrderInstructionId;
 import com.trading.orderreliability.order.domain.model.OrderInstructionStatus;
 
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Timestamp;
-import java.time.Instant;
-import java.util.List;
 import java.util.Optional;
 
-import org.springframework.jdbc.core.JdbcTemplate;
+import jakarta.persistence.EntityManager;
+
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class OrderInstructionRepository {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final JpaOrderInstructionRepository jpaRepository;
+    private final EntityManager entityManager;
 
-    public OrderInstructionRepository(JdbcTemplate jdbcTemplate) {
-        this.jdbcTemplate = jdbcTemplate;
+    public OrderInstructionRepository(JpaOrderInstructionRepository jpaRepository, EntityManager entityManager) {
+        this.jpaRepository = jpaRepository;
+        this.entityManager = entityManager;
     }
 
+    @Transactional(noRollbackFor = DuplicateKeyException.class)
     public void insert(OrderInstruction instruction, String payloadJson) {
-        jdbcTemplate.update("""
-                        INSERT INTO order_instruction (
+        int inserted = entityManager.createNativeQuery("""
+                        INSERT IGNORE INTO order_instruction (
                             id, order_id, account_id, instruction_type, client_instruction_id,
                             status, retry_count, request_payload_json, request_payload_hash,
                             result_code, result_message, trace_id, created_at, updated_at, resolved_at
                         )
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                UuidBytes.toBytes(instruction.instructionId().value()),
-                UuidBytes.toBytes(instruction.orderId().value()),
-                instruction.accountId().value(),
-                instruction.instructionType().name(),
-                instruction.clientInstructionId(),
-                instruction.status().name(),
-                instruction.retryCount(),
-                payloadJson,
-                instruction.requestPayloadHash(),
-                instruction.resultCode(),
-                instruction.resultMessage(),
-                instruction.traceId(),
-                Timestamp.from(instruction.createdAt()),
-                Timestamp.from(instruction.updatedAt()),
-                toTimestamp(instruction.resolvedAt())
-        );
+                        """)
+                .setParameter(1, UuidBytes.toBytes(instruction.instructionId().value()))
+                .setParameter(2, UuidBytes.toBytes(instruction.orderId().value()))
+                .setParameter(3, instruction.accountId().value())
+                .setParameter(4, instruction.instructionType().name())
+                .setParameter(5, instruction.clientInstructionId())
+                .setParameter(6, instruction.status().name())
+                .setParameter(7, instruction.retryCount())
+                .setParameter(8, payloadJson)
+                .setParameter(9, instruction.requestPayloadHash())
+                .setParameter(10, instruction.resultCode())
+                .setParameter(11, instruction.resultMessage())
+                .setParameter(12, instruction.traceId())
+                .setParameter(13, instruction.createdAt())
+                .setParameter(14, instruction.updatedAt())
+                .setParameter(15, instruction.resolvedAt())
+                .executeUpdate();
+        if (inserted == 0) {
+            throw new DuplicateKeyException("Duplicate order instruction idempotency key");
+        }
     }
 
     public Optional<OrderInstruction> findByIdempotencyKey(String accountId, InstructionType instructionType, String clientInstructionId) {
-        List<OrderInstruction> instructions = jdbcTemplate.query("""
-                        SELECT *
-                        FROM order_instruction
-                        WHERE account_id = ? AND instruction_type = ? AND client_instruction_id = ?
-                        """,
-                this::mapInstruction,
-                accountId,
-                instructionType.name(),
-                clientInstructionId
-        );
-        return instructions.stream().findFirst();
+        return jpaRepository.findByAccountIdAndInstructionTypeAndClientInstructionId(
+                        accountId,
+                        instructionType.name(),
+                        clientInstructionId
+                )
+                .map(this::toDomain);
     }
 
     public Optional<OrderInstruction> findByOrderAndTypeAndClientInstructionId(
@@ -73,57 +72,39 @@ public class OrderInstructionRepository {
             InstructionType instructionType,
             String clientInstructionId
     ) {
-        List<OrderInstruction> instructions = jdbcTemplate.query("""
-                        SELECT *
-                        FROM order_instruction
-                        WHERE order_id = ? AND instruction_type = ? AND client_instruction_id = ?
-                        """,
-                this::mapInstruction,
-                UuidBytes.toBytes(orderId.value()),
-                instructionType.name(),
-                clientInstructionId
-        );
-        return instructions.stream().findFirst();
+        return jpaRepository.findByOrderIdAndInstructionTypeAndClientInstructionId(
+                        orderId.value(),
+                        instructionType.name(),
+                        clientInstructionId
+                )
+                .map(this::toDomain);
     }
 
     public Optional<OrderInstruction> findActiveCancel(OrderId orderId) {
-        List<OrderInstruction> instructions = jdbcTemplate.query("""
-                        SELECT *
-                        FROM order_instruction
-                        WHERE order_id = ? AND instruction_type = ? AND status = ?
-                        """,
-                this::mapInstruction,
-                UuidBytes.toBytes(orderId.value()),
-                InstructionType.CANCEL.name(),
-                OrderInstructionStatus.REQUESTED.name()
-        );
-        return instructions.stream().findFirst();
+        return jpaRepository.findByOrderIdAndInstructionTypeAndStatus(
+                        orderId.value(),
+                        InstructionType.CANCEL.name(),
+                        OrderInstructionStatus.REQUESTED.name()
+                )
+                .map(this::toDomain);
     }
 
-    private OrderInstruction mapInstruction(ResultSet rs, int rowNum) throws SQLException {
+    private OrderInstruction toDomain(OrderInstructionEntity entity) {
         return new OrderInstruction(
-                new OrderInstructionId(UuidBytes.fromBytes(rs.getBytes("id"))),
-                new OrderId(UuidBytes.fromBytes(rs.getBytes("order_id"))),
-                new AccountId(rs.getString("account_id")),
-                InstructionType.valueOf(rs.getString("instruction_type")),
-                rs.getString("client_instruction_id"),
-                OrderInstructionStatus.valueOf(rs.getString("status")),
-                rs.getInt("retry_count"),
-                rs.getString("request_payload_hash"),
-                rs.getString("result_code"),
-                rs.getString("result_message"),
-                rs.getString("trace_id"),
-                rs.getTimestamp("created_at").toInstant(),
-                rs.getTimestamp("updated_at").toInstant(),
-                toInstant(rs.getTimestamp("resolved_at"))
+                new OrderInstructionId(entity.getId()),
+                new OrderId(entity.getOrderId()),
+                new AccountId(entity.getAccountId()),
+                InstructionType.valueOf(entity.getInstructionType()),
+                entity.getClientInstructionId(),
+                OrderInstructionStatus.valueOf(entity.getStatus()),
+                entity.getRetryCount(),
+                entity.getRequestPayloadHash(),
+                entity.getResultCode(),
+                entity.getResultMessage(),
+                entity.getTraceId(),
+                entity.getCreatedAt(),
+                entity.getUpdatedAt(),
+                entity.getResolvedAt()
         );
-    }
-
-    private static Timestamp toTimestamp(Instant instant) {
-        return instant == null ? null : Timestamp.from(instant);
-    }
-
-    private static Instant toInstant(Timestamp timestamp) {
-        return timestamp == null ? null : timestamp.toInstant();
     }
 }

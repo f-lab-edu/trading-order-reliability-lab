@@ -2,6 +2,7 @@ package com.trading.orderreliability.order.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.trading.orderreliability.order.adapter.out.persistence.JpaOrderInstructionRepository;
 import com.trading.orderreliability.order.adapter.out.persistence.OrderInstructionRepository;
 import com.trading.orderreliability.order.support.MySqlTestContainerSupport;
 import com.trading.orderreliability.order.domain.model.AccountId;
@@ -29,13 +30,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import jakarta.persistence.EntityManager;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest
@@ -173,8 +175,11 @@ class OrderApplicationServiceConcurrencyRegressionTest extends MySqlTestContaine
 
         @Bean
         @Primary
-        OrderInstructionRepository raceGateOrderInstructionRepository(JdbcTemplate jdbcTemplate) {
-            return new RaceGateOrderInstructionRepository(jdbcTemplate);
+        OrderInstructionRepository raceGateOrderInstructionRepository(
+                JpaOrderInstructionRepository jpaRepository,
+                EntityManager entityManager
+        ) {
+            return new RaceGateOrderInstructionRepository(jpaRepository, entityManager);
         }
     }
 
@@ -183,8 +188,8 @@ class OrderApplicationServiceConcurrencyRegressionTest extends MySqlTestContaine
         private final CountDownLatch bothRequestsReadEmptyInstruction = new CountDownLatch(2);
         private final CountDownLatch bothCancelRequestsReadEmptyInstruction = new CountDownLatch(2);
 
-        RaceGateOrderInstructionRepository(JdbcTemplate jdbcTemplate) {
-            super(jdbcTemplate);
+        RaceGateOrderInstructionRepository(JpaOrderInstructionRepository jpaRepository, EntityManager entityManager) {
+            super(jpaRepository, entityManager);
         }
 
         @Override

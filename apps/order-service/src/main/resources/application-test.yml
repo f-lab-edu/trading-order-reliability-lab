@@ -4,5 +4,8 @@ server:
 spring:
   flyway:
     enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: none
   kafka:
     bootstrap-servers: localhost:19092
