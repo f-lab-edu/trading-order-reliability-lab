@@ -47,6 +47,7 @@ public class OrderController {
             @RequestHeader(value = "X-Trace-Id", required = false) String traceId,
             @RequestBody CreateOrderRequest request
     ) {
+        requireRequestBody(request);
         PlaceOrderCommand command = new PlaceOrderCommand(
                 requireText(request.clientOrderId(), "clientOrderId"),
                 new AccountId(requireText(request.accountId(), "accountId")),
@@ -92,6 +93,7 @@ public class OrderController {
             @RequestHeader(value = "X-Trace-Id", required = false) String traceId,
             @RequestBody CancelOrderRequest request
     ) {
+        requireRequestBody(request);
         CancelOrderCommand command = new CancelOrderCommand(
                 new AccountId(requireText(request.accountId(), "accountId")),
                 requireText(request.clientCancelRequestId(), "clientCancelRequestId"),
@@ -99,6 +101,12 @@ public class OrderController {
         );
         CancelOrderResult result = orderApplicationService.cancelOrder(orderId, command);
         return CancelOrderResponse.from(result);
+    }
+
+    private static void requireRequestBody(Object request) {
+        if (request == null) {
+            throw new IllegalArgumentException("request body must not be null");
+        }
     }
 
     private static String requireText(String value, String fieldName) {

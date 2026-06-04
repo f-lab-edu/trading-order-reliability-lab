@@ -170,4 +170,24 @@ class OrderControllerReliabilityRegressionTest extends MySqlTestContainerSupport
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
+
+    @Test
+    @DisplayName("주문 생성 요청 body가 JSON null이면 서버 오류가 아니라 400 Bad Request로 응답해야 한다")
+    void 주문_생성_body_null은_400으로_응답한다() throws Exception {
+        mockMvc.perform(post("/api/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("null"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+    }
+
+    @Test
+    @DisplayName("취소 요청 body가 JSON null이면 서버 오류가 아니라 400 Bad Request로 응답해야 한다")
+    void 취소_요청_body_null은_400으로_응답한다() throws Exception {
+        mockMvc.perform(post("/api/orders/{orderId}/cancellations", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("null"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+    }
 }

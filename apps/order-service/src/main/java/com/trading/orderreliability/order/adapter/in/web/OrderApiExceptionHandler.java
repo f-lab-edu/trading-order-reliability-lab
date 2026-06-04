@@ -10,6 +10,7 @@ import com.trading.orderreliability.order.domain.state.InvalidOrderTransitionExc
 import java.time.Instant;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -48,6 +49,12 @@ public class OrderApiExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ErrorResponse badRequest(RuntimeException exception) {
         return ErrorResponse.of("BAD_REQUEST", exception.getMessage());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse unreadableRequestBody(HttpMessageNotReadableException exception) {
+        return ErrorResponse.of("BAD_REQUEST", "request body must be valid JSON object");
     }
 
     public record ErrorResponse(String code, String message, Instant occurredAt) {
