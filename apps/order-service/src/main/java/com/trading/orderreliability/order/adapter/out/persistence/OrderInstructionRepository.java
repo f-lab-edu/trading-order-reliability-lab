@@ -25,7 +25,7 @@ public class OrderInstructionRepository {
 
     @Transactional(noRollbackFor = DuplicateKeyException.class)
     public void insert(OrderInstruction instruction, String payloadJson) {
-        int inserted = jpaRepository.insertIgnore(
+        jpaRepository.insertOrKeepExisting(
                 UuidBytes.toBytes(instruction.instructionId().value()),
                 UuidBytes.toBytes(instruction.orderId().value()),
                 instruction.accountId().value(),
@@ -42,7 +42,14 @@ public class OrderInstructionRepository {
                 instruction.updatedAt(),
                 instruction.resolvedAt()
         );
-        if (inserted == 0) {
+        boolean inserted = jpaRepository.findByAccountIdAndInstructionTypeAndClientInstructionId(
+                        instruction.accountId().value(),
+                        instruction.instructionType().name(),
+                        instruction.clientInstructionId()
+                )
+                .map(existing -> existing.getId().equals(instruction.instructionId().value()))
+                .orElse(false);
+        if (!inserted) {
             throw new DuplicateKeyException("Duplicate order instruction idempotency key");
         }
     }

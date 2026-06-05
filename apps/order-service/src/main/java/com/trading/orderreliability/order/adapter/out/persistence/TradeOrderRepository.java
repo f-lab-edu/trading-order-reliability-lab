@@ -18,6 +18,7 @@ import java.util.Optional;
 
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class TradeOrderRepository {
@@ -32,6 +33,7 @@ public class TradeOrderRepository {
         jpaRepository.save(toEntity(order));
     }
 
+    @Transactional
     public void updateState(Order order) {
         TradeOrderEntity entity = jpaRepository.findById(order.orderId().value())
                 .orElseThrow(() -> new IllegalStateException("Order not found for update: " + order.orderId().value()));
@@ -42,6 +44,7 @@ public class TradeOrderRepository {
         entity.setVersion(entity.getVersion() + 1);
         entity.setUpdatedAt(order.updatedAt());
         entity.setTerminalAt(order.terminalAt());
+        jpaRepository.save(entity);
     }
 
     public Optional<Order> findById(OrderId orderId) {

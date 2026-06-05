@@ -36,6 +36,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/orders")
 public class OrderController {
 
+    private static final int MAX_ACCOUNT_ID_LENGTH = 64;
+    private static final int MAX_CLIENT_INSTRUCTION_ID_LENGTH = 64;
+    private static final int MAX_SYMBOL_LENGTH = 32;
+    private static final int MAX_TRACE_ID_LENGTH = 64;
+
     private final OrderApplicationService orderApplicationService;
 
     public OrderController(OrderApplicationService orderApplicationService) {
@@ -49,10 +54,10 @@ public class OrderController {
     ) {
         requireRequestBody(request);
         PlaceOrderCommand command = new PlaceOrderCommand(
-                requireText(request.clientOrderId(), "clientOrderId"),
-                new AccountId(requireText(request.accountId(), "accountId")),
+                requireText(request.clientOrderId(), "clientOrderId", MAX_CLIENT_INSTRUCTION_ID_LENGTH),
+                new AccountId(requireText(request.accountId(), "accountId", MAX_ACCOUNT_ID_LENGTH)),
                 requireValue(request.market(), "market"),
-                new Symbol(requireText(request.symbol(), "symbol")),
+                new Symbol(requireText(request.symbol(), "symbol", MAX_SYMBOL_LENGTH)),
                 requireValue(request.side(), "side"),
                 requireValue(request.orderType(), "orderType"),
                 requireValue(request.tif(), "tif"),
@@ -95,8 +100,8 @@ public class OrderController {
     ) {
         requireRequestBody(request);
         CancelOrderCommand command = new CancelOrderCommand(
-                new AccountId(requireText(request.accountId(), "accountId")),
-                requireText(request.clientCancelRequestId(), "clientCancelRequestId"),
+                new AccountId(requireText(request.accountId(), "accountId", MAX_ACCOUNT_ID_LENGTH)),
+                requireText(request.clientCancelRequestId(), "clientCancelRequestId", MAX_CLIENT_INSTRUCTION_ID_LENGTH),
                 traceIdOrNew(traceId)
         );
         CancelOrderResult result = orderApplicationService.cancelOrder(orderId, command);
@@ -116,6 +121,14 @@ public class OrderController {
         return value;
     }
 
+    private static String requireText(String value, String fieldName, int maxLength) {
+        String required = requireText(value, fieldName);
+        if (required.length() > maxLength) {
+            throw new IllegalArgumentException(fieldName + " must be at most " + maxLength + " characters");
+        }
+        return required;
+    }
+
     private static <T> T requireValue(T value, String fieldName) {
         if (value == null) {
             throw new IllegalArgumentException(fieldName + " must not be null");
@@ -124,7 +137,13 @@ public class OrderController {
     }
 
     private static String traceIdOrNew(String traceId) {
-        return traceId == null || traceId.isBlank() ? UUID.randomUUID().toString() : traceId;
+        if (traceId == null || traceId.isBlank()) {
+            return UUID.randomUUID().toString();
+        }
+        if (traceId.length() > MAX_TRACE_ID_LENGTH) {
+            throw new IllegalArgumentException("X-Trace-Id must be at most " + MAX_TRACE_ID_LENGTH + " characters");
+        }
+        return traceId;
     }
 
     public record CreateOrderRequest(

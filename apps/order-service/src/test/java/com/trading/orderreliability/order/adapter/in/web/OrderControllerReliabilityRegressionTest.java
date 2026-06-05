@@ -182,6 +182,55 @@ class OrderControllerReliabilityRegressionTest extends MySqlTestContainerSupport
     }
 
     @Test
+    @DisplayName("주문 생성 멱등키가 DB 컬럼 길이를 넘으면 400 Bad Request로 응답해야 한다")
+    void 주문_생성_멱등키_길이_초과는_400으로_응답한다() throws Exception {
+        String requestBody = """
+                {
+                  "clientOrderId": "%s",
+                  "accountId": "ACC-CONTROLLER-005",
+                  "market": "US",
+                  "symbol": "AAPL",
+                  "side": "BUY",
+                  "orderType": "LIMIT",
+                  "tif": "DAY",
+                  "orderQty": 100,
+                  "limitPrice": "189.50"
+                }
+                """.formatted("x".repeat(65));
+
+        mockMvc.perform(post("/api/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+    }
+
+    @Test
+    @DisplayName("Trace ID가 DB 컬럼 길이를 넘으면 400 Bad Request로 응답해야 한다")
+    void trace_id_길이_초과는_400으로_응답한다() throws Exception {
+        String requestBody = """
+                {
+                  "clientOrderId": "controller-client-order-005",
+                  "accountId": "ACC-CONTROLLER-006",
+                  "market": "US",
+                  "symbol": "AAPL",
+                  "side": "BUY",
+                  "orderType": "LIMIT",
+                  "tif": "DAY",
+                  "orderQty": 100,
+                  "limitPrice": "189.50"
+                }
+                """;
+
+        mockMvc.perform(post("/api/orders")
+                        .header("X-Trace-Id", "t".repeat(65))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+    }
+
+    @Test
     @DisplayName("취소 요청 body가 JSON null이면 서버 오류가 아니라 400 Bad Request로 응답해야 한다")
     void 취소_요청_body_null은_400으로_응답한다() throws Exception {
         mockMvc.perform(post("/api/orders/{orderId}/cancellations", UUID.randomUUID())

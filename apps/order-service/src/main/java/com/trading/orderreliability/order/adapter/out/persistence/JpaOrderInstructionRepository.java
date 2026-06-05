@@ -13,7 +13,7 @@ public interface JpaOrderInstructionRepository extends JpaRepository<OrderInstru
 
     @Modifying
     @Query(value = """
-            INSERT IGNORE INTO order_instruction (
+            INSERT INTO order_instruction (
                 id, order_id, account_id, instruction_type, client_instruction_id,
                 status, retry_count, request_payload_json, request_payload_hash,
                 result_code, result_message, trace_id, created_at, updated_at, resolved_at
@@ -23,8 +23,10 @@ public interface JpaOrderInstructionRepository extends JpaRepository<OrderInstru
                 :status, :retryCount, :requestPayloadJson, :requestPayloadHash,
                 :resultCode, :resultMessage, :traceId, :createdAt, :updatedAt, :resolvedAt
             )
+            -- 멱등키 중복 경합만 흡수하고, 다른 insert 오류는 그대로 실패시키기 위한 no-op update다.
+            ON DUPLICATE KEY UPDATE id = id
             """, nativeQuery = true)
-    int insertIgnore(
+    int insertOrKeepExisting(
             @Param("id") byte[] id,
             @Param("orderId") byte[] orderId,
             @Param("accountId") String accountId,
