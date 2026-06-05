@@ -175,7 +175,7 @@ docker compose -f docker/docker-compose.kafka-1node.yml down -v
 상세 설계는 아래 문서에서 관리합니다.
 
 | 단계 | 문서                                                          | 상태    |
-| -: | ----------------------------------------------------------- | ----- |
+| -: | ----------------------------------------------------------- |-------|
 |  1 | [프로젝트 문제 정의](docs/01-problem-definition.md)                 | 작성 완료 |
 |  2 | [시스템 컨텍스트 다이어그램](docs/02-system-context.md)                 | 작성 완료 |
 |  3 | [요구사항 정의](docs/03-requirements.md)                          | 작성 완료 |
@@ -185,11 +185,11 @@ docker compose -f docker/docker-compose.kafka-1node.yml down -v
 |  7 | [아키텍처 개요](docs/07-architecture-overview.md)                 | 작성 완료 |
 |  8 | [ADR / DDR](docs/08-adr-ddr.md)                             | 작성 완료 |
 |  9 | [DB 설계](docs/09-database-design.md)                         | 작성 완료 |
-| 10 | [API / 이벤트 / 전문 명세](docs/10-api-event-protocol-spec.md)     | 작성 예정 |
+| 10 | [API / 이벤트 / 전문 명세](docs/10-api-event-protocol-spec.md)     | 작성 완료 |
 | 10-A | [Broker TCP 전문 Byte-Level Layout](docs/10a-broker-tcp-byte-level-layout.md) | 작성 완료 |
-| 11 | [장애 처리 / 재처리 정책](docs/11-failure-and-retry-policy.md)       | 작성 예정 |
-| 12 | [테스트 / 모니터링 / 운영 계획](docs/12-test-monitoring-operations.md) | 작성 예정 |
-| 13 | [개발 마일스톤](docs/13-development-milestones.md)                | 작성 예정 |
+| 11 | [장애 처리 / 재처리 정책](docs/11-failure-and-retry-policy.md)       | 작성 완료 |
+| 12 | [테스트 / 모니터링 / 운영 계획](docs/12-test-monitoring-operations.md) | 작성 완료 |
+| 13 | [개발 마일스톤](docs/13-development-milestones.md)                | 작성 완료 |
 
 ## 디렉토리 구조
 
