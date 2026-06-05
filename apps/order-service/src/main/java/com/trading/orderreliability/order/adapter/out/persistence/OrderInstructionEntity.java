@@ -7,9 +7,14 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 
 @Entity
 @Table(name = "order_instruction")
+@Getter(AccessLevel.PACKAGE)
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 class OrderInstructionEntity {
 
     @Id
@@ -57,63 +62,4 @@ class OrderInstructionEntity {
 
     @Column(name = "resolved_at")
     private Instant resolvedAt;
-
-    protected OrderInstructionEntity() {
-    }
-
-    UUID getId() {
-        return id;
-    }
-
-    UUID getOrderId() {
-        return orderId;
-    }
-
-    String getAccountId() {
-        return accountId;
-    }
-
-    String getInstructionType() {
-        return instructionType;
-    }
-
-    String getClientInstructionId() {
-        return clientInstructionId;
-    }
-
-    String getStatus() {
-        return status;
-    }
-
-    int getRetryCount() {
-        return retryCount;
-    }
-
-    String getRequestPayloadHash() {
-        return requestPayloadHash;
-    }
-
-    String getResultCode() {
-        return resultCode;
-    }
-
-    String getResultMessage() {
-        return resultMessage;
-    }
-
-    String getTraceId() {
-        return traceId;
-    }
-
-    Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    Instant getUpdatedAt() {
-        return updatedAt;
-    }
-
-    Instant getResolvedAt() {
-        return resolvedAt;
-    }
 }

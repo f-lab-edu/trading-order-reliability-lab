@@ -67,25 +67,25 @@ public class TradeOrderRepository {
     }
 
     private TradeOrderEntity toEntity(Order order) {
-        TradeOrderEntity entity = new TradeOrderEntity();
-        entity.setId(order.orderId().value());
-        entity.setAccountId(order.accountId().value());
-        entity.setMarket(order.market().name());
-        entity.setSymbol(order.symbol().value());
-        entity.setSide(order.side().name());
-        entity.setOrderType(order.orderType().name());
-        entity.setTif(order.timeInForce().name());
-        entity.setOrderQty(order.orderQty().value());
-        entity.setLimitPrice(order.limitPrice().value());
-        entity.setStatus(order.status().name());
-        entity.setReconciliationStatus(order.reconciliationStatus().name());
-        entity.setCumQty(order.cumQty().value());
-        entity.setLeavesQty(order.leavesQty().value());
-        entity.setVersion(0L);
-        entity.setCreatedAt(order.createdAt());
-        entity.setUpdatedAt(order.updatedAt());
-        entity.setTerminalAt(order.terminalAt());
-        return entity;
+        return TradeOrderEntity.builder()
+                .id(order.orderId().value())
+                .accountId(order.accountId().value())
+                .market(order.market().name())
+                .symbol(order.symbol().value())
+                .side(order.side().name())
+                .orderType(order.orderType().name())
+                .tif(order.timeInForce().name())
+                .orderQty(order.orderQty().value())
+                .limitPrice(order.limitPrice().value())
+                .status(order.status().name())
+                .reconciliationStatus(order.reconciliationStatus().name())
+                .cumQty(order.cumQty().value())
+                .leavesQty(order.leavesQty().value())
+                .version(0L)
+                .createdAt(order.createdAt())
+                .updatedAt(order.updatedAt())
+                .terminalAt(order.terminalAt())
+                .build();
     }
 
     private Order toDomain(TradeOrderEntity entity) {

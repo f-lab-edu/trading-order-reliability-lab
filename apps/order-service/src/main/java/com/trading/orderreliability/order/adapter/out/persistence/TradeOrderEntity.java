@@ -8,9 +8,17 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import lombok.AccessLevel;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 @Entity
 @Table(name = "trade_order")
+@Getter(AccessLevel.PACKAGE)
+@Setter(AccessLevel.PACKAGE)
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 class TradeOrderEntity {
 
     @Id
@@ -65,142 +73,42 @@ class TradeOrderEntity {
     @Column(name = "terminal_at")
     private Instant terminalAt;
 
-    protected TradeOrderEntity() {
-    }
-
-    UUID getId() {
-        return id;
-    }
-
-    void setId(UUID id) {
+    @Builder(access = AccessLevel.PACKAGE)
+    private TradeOrderEntity(
+            UUID id,
+            String accountId,
+            String market,
+            String symbol,
+            String side,
+            String orderType,
+            String tif,
+            long orderQty,
+            BigDecimal limitPrice,
+            String status,
+            String reconciliationStatus,
+            long cumQty,
+            long leavesQty,
+            long version,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant terminalAt
+    ) {
         this.id = id;
-    }
-
-    String getAccountId() {
-        return accountId;
-    }
-
-    void setAccountId(String accountId) {
         this.accountId = accountId;
-    }
-
-    String getMarket() {
-        return market;
-    }
-
-    void setMarket(String market) {
         this.market = market;
-    }
-
-    String getSymbol() {
-        return symbol;
-    }
-
-    void setSymbol(String symbol) {
         this.symbol = symbol;
-    }
-
-    String getSide() {
-        return side;
-    }
-
-    void setSide(String side) {
         this.side = side;
-    }
-
-    String getOrderType() {
-        return orderType;
-    }
-
-    void setOrderType(String orderType) {
         this.orderType = orderType;
-    }
-
-    String getTif() {
-        return tif;
-    }
-
-    void setTif(String tif) {
         this.tif = tif;
-    }
-
-    long getOrderQty() {
-        return orderQty;
-    }
-
-    void setOrderQty(long orderQty) {
         this.orderQty = orderQty;
-    }
-
-    BigDecimal getLimitPrice() {
-        return limitPrice;
-    }
-
-    void setLimitPrice(BigDecimal limitPrice) {
         this.limitPrice = limitPrice;
-    }
-
-    String getStatus() {
-        return status;
-    }
-
-    void setStatus(String status) {
         this.status = status;
-    }
-
-    String getReconciliationStatus() {
-        return reconciliationStatus;
-    }
-
-    void setReconciliationStatus(String reconciliationStatus) {
         this.reconciliationStatus = reconciliationStatus;
-    }
-
-    long getCumQty() {
-        return cumQty;
-    }
-
-    void setCumQty(long cumQty) {
         this.cumQty = cumQty;
-    }
-
-    long getLeavesQty() {
-        return leavesQty;
-    }
-
-    void setLeavesQty(long leavesQty) {
         this.leavesQty = leavesQty;
-    }
-
-    long getVersion() {
-        return version;
-    }
-
-    void setVersion(long version) {
         this.version = version;
-    }
-
-    Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
-    }
-
-    Instant getUpdatedAt() {
-        return updatedAt;
-    }
-
-    void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
-    }
-
-    Instant getTerminalAt() {
-        return terminalAt;
-    }
-
-    void setTerminalAt(Instant terminalAt) {
         this.terminalAt = terminalAt;
     }
 }

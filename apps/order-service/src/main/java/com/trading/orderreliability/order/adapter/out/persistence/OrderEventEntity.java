@@ -7,9 +7,13 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import lombok.AccessLevel;
+import lombok.Builder;
+import lombok.NoArgsConstructor;
 
 @Entity
 @Table(name = "order_event")
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 class OrderEventEntity {
 
     @Id
@@ -49,54 +53,32 @@ class OrderEventEntity {
     @Column(name = "recorded_at", nullable = false)
     private Instant recordedAt;
 
-    protected OrderEventEntity() {
-    }
-
-    void setId(UUID id) {
+    @Builder(access = AccessLevel.PACKAGE)
+    private OrderEventEntity(
+            UUID id,
+            UUID orderId,
+            String eventType,
+            int eventVersion,
+            String source,
+            UUID sourceMessageId,
+            String dedupKey,
+            String payloadHash,
+            String traceId,
+            String payloadJson,
+            Instant occurredAt,
+            Instant recordedAt
+    ) {
         this.id = id;
-    }
-
-    void setOrderId(UUID orderId) {
         this.orderId = orderId;
-    }
-
-    void setEventType(String eventType) {
         this.eventType = eventType;
-    }
-
-    void setEventVersion(int eventVersion) {
         this.eventVersion = eventVersion;
-    }
-
-    void setSource(String source) {
         this.source = source;
-    }
-
-    void setSourceMessageId(UUID sourceMessageId) {
         this.sourceMessageId = sourceMessageId;
-    }
-
-    void setDedupKey(String dedupKey) {
         this.dedupKey = dedupKey;
-    }
-
-    void setPayloadHash(String payloadHash) {
         this.payloadHash = payloadHash;
-    }
-
-    void setTraceId(String traceId) {
         this.traceId = traceId;
-    }
-
-    void setPayloadJson(String payloadJson) {
         this.payloadJson = payloadJson;
-    }
-
-    void setOccurredAt(Instant occurredAt) {
         this.occurredAt = occurredAt;
-    }
-
-    void setRecordedAt(Instant recordedAt) {
         this.recordedAt = recordedAt;
     }
 }

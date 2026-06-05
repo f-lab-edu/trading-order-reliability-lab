@@ -30,8 +30,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import jakarta.persistence.EntityManager;
-
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -175,11 +173,8 @@ class OrderApplicationServiceConcurrencyRegressionTest extends MySqlTestContaine
 
         @Bean
         @Primary
-        OrderInstructionRepository raceGateOrderInstructionRepository(
-                JpaOrderInstructionRepository jpaRepository,
-                EntityManager entityManager
-        ) {
-            return new RaceGateOrderInstructionRepository(jpaRepository, entityManager);
+        OrderInstructionRepository raceGateOrderInstructionRepository(JpaOrderInstructionRepository jpaRepository) {
+            return new RaceGateOrderInstructionRepository(jpaRepository);
         }
     }
 
@@ -188,8 +183,8 @@ class OrderApplicationServiceConcurrencyRegressionTest extends MySqlTestContaine
         private final CountDownLatch bothRequestsReadEmptyInstruction = new CountDownLatch(2);
         private final CountDownLatch bothCancelRequestsReadEmptyInstruction = new CountDownLatch(2);
 
-        RaceGateOrderInstructionRepository(JpaOrderInstructionRepository jpaRepository, EntityManager entityManager) {
-            super(jpaRepository, entityManager);
+        RaceGateOrderInstructionRepository(JpaOrderInstructionRepository jpaRepository) {
+            super(jpaRepository);
         }
 
         @Override

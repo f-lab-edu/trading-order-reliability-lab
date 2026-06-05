@@ -10,8 +10,6 @@ import com.trading.orderreliability.order.domain.model.OrderInstructionStatus;
 
 import java.util.Optional;
 
-import jakarta.persistence.EntityManager;
-
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,39 +18,30 @@ import org.springframework.transaction.annotation.Transactional;
 public class OrderInstructionRepository {
 
     private final JpaOrderInstructionRepository jpaRepository;
-    private final EntityManager entityManager;
 
-    public OrderInstructionRepository(JpaOrderInstructionRepository jpaRepository, EntityManager entityManager) {
+    public OrderInstructionRepository(JpaOrderInstructionRepository jpaRepository) {
         this.jpaRepository = jpaRepository;
-        this.entityManager = entityManager;
     }
 
     @Transactional(noRollbackFor = DuplicateKeyException.class)
     public void insert(OrderInstruction instruction, String payloadJson) {
-        int inserted = entityManager.createNativeQuery("""
-                        INSERT IGNORE INTO order_instruction (
-                            id, order_id, account_id, instruction_type, client_instruction_id,
-                            status, retry_count, request_payload_json, request_payload_hash,
-                            result_code, result_message, trace_id, created_at, updated_at, resolved_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """)
-                .setParameter(1, UuidBytes.toBytes(instruction.instructionId().value()))
-                .setParameter(2, UuidBytes.toBytes(instruction.orderId().value()))
-                .setParameter(3, instruction.accountId().value())
-                .setParameter(4, instruction.instructionType().name())
-                .setParameter(5, instruction.clientInstructionId())
-                .setParameter(6, instruction.status().name())
-                .setParameter(7, instruction.retryCount())
-                .setParameter(8, payloadJson)
-                .setParameter(9, instruction.requestPayloadHash())
-                .setParameter(10, instruction.resultCode())
-                .setParameter(11, instruction.resultMessage())
-                .setParameter(12, instruction.traceId())
-                .setParameter(13, instruction.createdAt())
-                .setParameter(14, instruction.updatedAt())
-                .setParameter(15, instruction.resolvedAt())
-                .executeUpdate();
+        int inserted = jpaRepository.insertIgnore(
+                UuidBytes.toBytes(instruction.instructionId().value()),
+                UuidBytes.toBytes(instruction.orderId().value()),
+                instruction.accountId().value(),
+                instruction.instructionType().name(),
+                instruction.clientInstructionId(),
+                instruction.status().name(),
+                instruction.retryCount(),
+                payloadJson,
+                instruction.requestPayloadHash(),
+                instruction.resultCode(),
+                instruction.resultMessage(),
+                instruction.traceId(),
+                instruction.createdAt(),
+                instruction.updatedAt(),
+                instruction.resolvedAt()
+        );
         if (inserted == 0) {
             throw new DuplicateKeyException("Duplicate order instruction idempotency key");
         }
@@ -61,19 +50,6 @@ public class OrderInstructionRepository {
     public Optional<OrderInstruction> findByIdempotencyKey(String accountId, InstructionType instructionType, String clientInstructionId) {
         return jpaRepository.findByAccountIdAndInstructionTypeAndClientInstructionId(
                         accountId,
-                        instructionType.name(),
-                        clientInstructionId
-                )
-                .map(this::toDomain);
-    }
-
-    public Optional<OrderInstruction> findByOrderAndTypeAndClientInstructionId(
-            OrderId orderId,
-            InstructionType instructionType,
-            String clientInstructionId
-    ) {
-        return jpaRepository.findByOrderIdAndInstructionTypeAndClientInstructionId(
-                        orderId.value(),
                         instructionType.name(),
                         clientInstructionId
                 )

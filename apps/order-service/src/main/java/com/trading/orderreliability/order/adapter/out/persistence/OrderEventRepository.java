@@ -27,19 +27,19 @@ public class OrderEventRepository {
             String payloadJson,
             Instant occurredAt
     ) {
-        OrderEventEntity entity = new OrderEventEntity();
-        entity.setId(eventId);
-        entity.setOrderId(orderId.value());
-        entity.setEventType(eventType);
-        entity.setEventVersion(1);
-        entity.setSource(source);
-        entity.setSourceMessageId(null);
-        entity.setDedupKey(dedupKey);
-        entity.setPayloadHash(payloadHash);
-        entity.setTraceId(traceId);
-        entity.setPayloadJson(payloadJson);
-        entity.setOccurredAt(occurredAt);
-        entity.setRecordedAt(Instant.now());
-        jpaRepository.save(entity);
+        jpaRepository.save(OrderEventEntity.builder()
+                .id(eventId)
+                .orderId(orderId.value())
+                .eventType(eventType)
+                .eventVersion(1)
+                .source(source)
+                .sourceMessageId(null)
+                .dedupKey(dedupKey)
+                .payloadHash(payloadHash)
+                .traceId(traceId)
+                .payloadJson(payloadJson)
+                .occurredAt(occurredAt)
+                .recordedAt(Instant.now())
+                .build());
     }
 }
