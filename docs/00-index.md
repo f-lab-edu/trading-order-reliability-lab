@@ -31,6 +31,7 @@
 - `docs/11-failure-and-retry-policy.md`: 장애/재시도/recovery 정책
 - `docs/12-test-monitoring-operations.md`: 테스트/모니터링/운영 계획
 - `docs/13-development-milestones.md`: 개발 마일스톤
+- `docs/14-api-sequence-diagrams.md`: 주요 API sequence diagram 모음
 
 ## 마일스톤 작업 기본 흐름
 

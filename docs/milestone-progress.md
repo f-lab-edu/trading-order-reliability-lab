@@ -7,10 +7,10 @@
 1. `docs/00-index.md`
 2. 이 문서
 3. `docs/13-development-milestones.md`
-4. active milestone에 연결된 최신 `docs/ai-work-log/*.md`
+4. active milestone에 연결된 최신 `local-notes/ai-work-log/*.md`
 5. active milestone 관련 설계문서
 
-이 문서는 큰 milestone 상태만 기록한다. 세부 피드백, 문제 카드, 테스트 로그는 `docs/ai-work-log/`와 `docs/career/`를 따른다.
+이 문서는 큰 milestone 상태만 기록한다. 세부 피드백, 문제 카드, 테스트 로그는 `local-notes/ai-work-log/`와 `local-notes/career/`를 따른다.
 
 ---
 
@@ -22,7 +22,7 @@
 | 현재 active milestone | `M2` Reliable messaging 기반 |
 | M2 상태 | 구현 및 reviewer/design_guardian 피드백 루프 완료 |
 | 다음 권장 작업 | M2 변경분 최종 점검 후 커밋/PR 또는 M3 착수 |
-| 최신 작업 로그 | `docs/ai-work-log/2026-06-10-M2.md` |
+| 최신 작업 로그 | `local-notes/ai-work-log/2026-06-10-M2.md` |
 | 최신 전체 검증 | `./gradlew --gradle-user-home .gradle test` 성공 |
 
 ---
@@ -98,7 +98,7 @@ M2에서 의도적으로 아직 하지 않는 것:
 * `docs/11-failure-and-retry-policy.md`
 * `docs/12-test-monitoring-operations.md`
 * `docs/13-development-milestones.md`
-* `docs/ai-work-log/2026-06-10-M2.md`
+* `local-notes/ai-work-log/2026-06-10-M2.md`
 
 ---
 
