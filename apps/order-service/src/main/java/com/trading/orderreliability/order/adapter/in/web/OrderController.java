@@ -1,10 +1,10 @@
 package com.trading.orderreliability.order.adapter.in.web;
 
-import com.trading.orderreliability.order.application.CancelOrderCommand;
-import com.trading.orderreliability.order.application.CancelOrderResult;
+import com.trading.orderreliability.order.application.command.CancelOrderCommand;
+import com.trading.orderreliability.order.application.result.CancelOrderResult;
 import com.trading.orderreliability.order.application.OrderApplicationService;
-import com.trading.orderreliability.order.application.PlaceOrderCommand;
-import com.trading.orderreliability.order.application.PlaceOrderResult;
+import com.trading.orderreliability.order.application.command.PlaceOrderCommand;
+import com.trading.orderreliability.order.application.result.PlaceOrderResult;
 import com.trading.orderreliability.order.domain.model.AccountId;
 import com.trading.orderreliability.order.domain.model.Market;
 import com.trading.orderreliability.order.domain.model.Order;
