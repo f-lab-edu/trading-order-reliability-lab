@@ -14,3 +14,6 @@ build/
 
 # Personal learning notes and local verification writeups.
 local-notes/
+
+# Codex hook raw ledger. Human-curated milestone logs remain tracked.
+docs/ai-work-log/_raw-events/

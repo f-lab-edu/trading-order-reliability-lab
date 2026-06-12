@@ -191,17 +191,20 @@ broker_code + broker_order_id
 | `order_db`    | `order_event`            | Order Service    | 주문 상태 변경 감사 이력 및 브로커 이벤트 dedup    |
 | `order_db`    | `outbox_message`         | Order Service    | 발행 대상 메시지 저장                      |
 | `order_db`    | `processed_message`      | Order Service    | 소비 메시지 중복 방지                      |
+| `order_db`    | `parked_message`         | Order Service    | 처리 불가 메시지 운영 격리 로그               |
 | `gateway_db`  | `broker_order_binding`   | Broker Gateway   | 내부 주문과 브로커 주문 ID 매핑               |
 | `gateway_db`  | `broker_command_attempt` | Broker Gateway   | 브로커 command 전송 시도 이력              |
 | `gateway_db`  | `broker_message_journal` | Broker Gateway   | TCP 전문 송수신 journal                |
 | `gateway_db`  | `outbox_message`         | Broker Gateway   | 발행 대상 broker event 저장             |
 | `gateway_db`  | `processed_message`      | Broker Gateway   | 소비 command 중복 방지                  |
+| `gateway_db`  | `parked_message`         | Broker Gateway   | 처리 불가 command 운영 격리 로그           |
 | `recovery_db` | `reconciliation_job`     | Recovery Service | 복구 작업 단위                          |
 | `recovery_db` | `reconciliation_attempt` | Recovery Service | 상태조회 시도 이력                        |
 | `recovery_db` | `outbox_message`         | Recovery Service | 상태조회/재시도 command 발행 대상 저장         |
 | `recovery_db` | `processed_message`      | Recovery Service | 소비 lifecycle event 중복 방지          |
+| `recovery_db` | `parked_message`         | Recovery Service | 처리 불가 lifecycle event 운영 격리 로그  |
 
-총 **14개 테이블**이다.
+총 **17개 테이블**이다.
 
 ---
 
@@ -633,6 +636,14 @@ Order Service consumer의 메시지 중복 처리를 위한 테이블이다.
 
 ---
 
+## 9.6.6 `parked_message`
+
+Order Service consumer가 schema parse 실패 또는 반복 실패 메시지를 주문 상태 변경 경로와 분리해 운영 조사 대상으로 격리하는 테이블이다.
+
+구조는 9.9.3의 공통 `parked_message` 설계를 따른다.
+
+---
+
 # 9.7 Broker Gateway DB
 
 ## 9.7.1 `broker_order_binding`
@@ -828,6 +839,14 @@ Broker Gateway consumer의 메시지 중복 방지 테이블이다.
 
 ---
 
+## 9.7.6 `parked_message`
+
+Broker Gateway consumer가 처리 불가 command를 broker 전송 경로와 분리해 운영 조사 대상으로 격리하는 테이블이다.
+
+구조는 9.9.3의 공통 `parked_message` 설계를 따른다.
+
+---
+
 # 9.8 Recovery Service DB
 
 ## 9.8.1 `reconciliation_job`
@@ -989,7 +1008,15 @@ Recovery Service consumer의 메시지 중복 방지 테이블이다.
 
 ---
 
-# 9.9 공통 Outbox / Processed Message 구조
+## 9.8.5 `parked_message`
+
+Recovery Service consumer가 처리 불가 lifecycle/reconciliation event를 복구 상태 변경 경로와 분리해 운영 조사 대상으로 격리하는 테이블이다.
+
+구조는 9.9.3의 공통 `parked_message` 설계를 따른다.
+
+---
+
+# 9.9 공통 Messaging Table 구조
 
 ## 9.9.1 공통 Outbox 설계
 
@@ -1026,6 +1053,54 @@ Recovery Service consumer의 메시지 중복 방지 테이블이다.
 * 메시지 처리 트랜잭션 안에서 `processed_message`를 기록한다.
 * 동일 `consumer_name + message_id`가 이미 있으면 비즈니스 처리를 건너뛴다.
 * consumer 처리 후 acknowledgement / offset commit은 DB commit 이후 수행한다.
+
+---
+
+## 9.9.3 공통 Parked Message 설계
+
+`parked_message`는 각 consumer가 schema parse 실패, 반복 실패 등으로 즉시 비즈니스 처리할 수 없는 메시지를 운영 조사 대상으로 격리하는 공통 messaging table이다.
+
+적용 서비스:
+
+* Order Service
+* Broker Gateway Service
+* Recovery Service
+
+### 컬럼
+
+| 컬럼              | 타입             | NULL | 설명 |
+| --------------- | -------------- | ---: | --- |
+| `id`            | `BINARY(16)`   |    N | parking row ID, UUID v7 |
+| `source_topic`  | `VARCHAR(128)` |    N | 원본 Kafka topic |
+| `consumer_name` | `VARCHAR(64)`  |    N | parking을 수행한 consumer 식별자 |
+| `message_id`    | `BINARY(16)`   |    Y | envelope `messageId`; parse 실패로 추출 불가하면 NULL |
+| `message_type`  | `VARCHAR(64)`  |    Y | envelope `messageType`; parse 실패로 추출 불가하면 NULL |
+| `message_key`   | `VARCHAR(128)` |    Y | envelope `messageKey`; parse 실패로 추출 불가하면 NULL |
+| `trace_id`      | `VARCHAR(64)`  |    Y | envelope `traceId`; parse 실패로 추출 불가하면 NULL |
+| `error_code`    | `VARCHAR(64)`  |    N | 예: `SCHEMA_PARSE_FAILED`, `REPEATED_FAILURE` |
+| `retry_count`   | `INT`          |    N | parking 시점의 consumer 재시도 횟수 |
+| `payload_text`  | `LONGTEXT`     |    N | 원본 raw payload 또는 envelope JSON. 원본이 NULL이면 `"<null>"` sentinel 저장 |
+| `error_message` | `VARCHAR(512)` |    N | 원인 요약. NULL이면 `error_code`를 저장하고, 긴 메시지는 저장 전 512자로 잘라낼 수 있음 |
+| `failed_at`     | `DATETIME(3)`  |    N | 실패가 판정된 시각 |
+| `parked_at`     | `DATETIME(3)`  |    N | parking row가 기록된 시각 |
+
+### 주요 인덱스
+
+| 인덱스 | 컬럼 | 목적 |
+| --- | --- | --- |
+| PK | `id` | parking row 식별 |
+| IDX | `consumer_name, error_code, parked_at` | consumer/error별 조사 |
+| IDX | `source_topic, consumer_name, parked_at` | source topic 기반 운영 조회 |
+| IDX | `message_id` | known envelope 추적 |
+
+### 공통 규칙
+
+* 반복 실패처럼 envelope를 정상 파싱한 경우 `trace_id`에는 `envelope.traceId()`를 저장한다.
+* schema parse 실패처럼 envelope 자체를 파싱할 수 없는 경우 `message_id`, `message_type`, `message_key`, `trace_id`는 추출 가능한 값이 없으면 NULL로 둔다.
+* `payload_text`와 `error_message`는 NOT NULL이다. raw payload가 NULL이면 `"<null>"` sentinel을 저장하고, error message가 NULL이면 `error_code`를 fallback으로 저장한다.
+* `failed_at`은 실패가 판정된 시각, `parked_at`은 격리 row가 저장된 시각이다. Phase 1 API가 별도 실패 시각을 받지 않는 경우 두 값을 같은 시각으로 저장할 수 있다.
+* M2에서는 `parked_message`를 운영 감사 로그로 취급하므로 known envelope의 중복 parking row를 허용한다. `message_id` unique 제약이나 upsert는 재주입/자동정리 정책이 필요해질 때 별도 결정한다.
+* parking은 주문 상태나 복구 상태를 직접 변경하지 않는다. 후속 운영 조사, 수동 정리, Phase 2 재주입 도구의 입력으로만 사용한다.
 
 ---
 

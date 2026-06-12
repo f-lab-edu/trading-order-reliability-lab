@@ -640,15 +640,20 @@ Phase 1 parking 정책:
 
 | 항목 | 초기 정책 |
 | --- | --- |
-| parking 방식 | 별도 parking topic 또는 parking log 중 구현 편의에 따라 선택 |
-| parking topic naming | `<source-topic>.parking.v1` |
-| parking payload | 원본 envelope, error code, error message, consumer name, failed at |
+| parking 방식 | Phase 1은 서비스별 DB `parked_message` log 우선, 필요 시 별도 parking topic 검토 |
+| parking topic naming | 별도 topic 선택 시 `<source-topic>.parking.v1` |
+| parking payload | 원본 envelope 또는 raw payload, error code, error message, consumer name, source topic, trace id, failed at, parked at |
 | 반복 실패 기준 | 같은 consumer에서 5회 실패 |
 | non-retryable parse 오류 | 즉시 parking |
 | parking 후 처리 | offset commit 후 운영 조사 대상으로 전환 |
 
 parking은 자동 복구 큐가 아니라 **운영 격리 지점**이다.
 parking된 메시지를 재주입하는 도구는 Phase 2에서 검토한다.
+known envelope이 반복 실패로 여러 번 parking될 수 있으므로 M2에서는 중복 row를 운영 감사 로그로 허용한다.
+schema parse 실패처럼 envelope field를 추출할 수 없는 경우 `trace_id`와 envelope identity는 NULL로 둔다.
+raw payload가 NULL이면 `payload_text`에는 `"<null>"` sentinel을 저장하고, error message가 NULL이면 `error_code`를 fallback으로 저장한다.
+512자를 초과하는 error message는 저장 전 512자로 잘라낸다.
+현재 Phase 1 API가 실패 시각과 parking 기록 시각을 별도로 받지 않는 경우 `failed_at`과 `parked_at`은 같은 값으로 저장할 수 있다.
 
 ---
 
@@ -1180,6 +1185,7 @@ Phase 1에서는 장기 보존보다 디버깅 가능성을 우선한다.
 | `outbox_message SENT` | 7일 | 운영 추적 후 정리 가능 |
 | `outbox_message FAILED` | 조사 완료 전 보존 | 운영 개입 필요 |
 | `processed_message` | 7일 | 중복 재전달 window 기준 |
+| `parked_message` | 30일 또는 조사 완료 후 정리 | poison message 운영 감사 로그 |
 | application logs | 7일 | 로컬 환경 기준 |
 | metrics | 7일 | 회귀 분석용 |
 
