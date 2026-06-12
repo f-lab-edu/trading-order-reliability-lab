@@ -1,9 +1,13 @@
 package com.trading.orderreliability.order.application;
 
+import com.trading.orderreliability.common.messaging.BrokerCommandPayloads.CancelOrderCommandPayload;
+import com.trading.orderreliability.common.messaging.BrokerCommandPayloads.SubmitOrderCommandPayload;
+import com.trading.orderreliability.common.messaging.MessageTypes;
 import com.trading.orderreliability.order.adapter.out.persistence.OrderEventRepository;
 import com.trading.orderreliability.order.adapter.out.persistence.OrderInstructionRepository;
 import com.trading.orderreliability.order.adapter.out.persistence.TradeOrderRepository;
 import com.trading.orderreliability.common.id.UuidV7Generator;
+import com.trading.orderreliability.order.adapter.out.messaging.OutboxMessageRepository;
 import com.trading.orderreliability.order.domain.model.AccountId;
 import com.trading.orderreliability.order.domain.model.InstructionType;
 import com.trading.orderreliability.order.domain.model.Order;
@@ -37,6 +41,7 @@ public class OrderApplicationService {
     private final TradeOrderRepository orderRepository;
     private final OrderInstructionRepository instructionRepository;
     private final OrderEventRepository eventRepository;
+    private final OutboxMessageRepository outboxMessageRepository;
     private final OrderStateMachine stateMachine;
     private final UuidV7Generator uuidGenerator;
     private final HashingService hashingService;
@@ -48,6 +53,7 @@ public class OrderApplicationService {
             TradeOrderRepository orderRepository,
             OrderInstructionRepository instructionRepository,
             OrderEventRepository eventRepository,
+            OutboxMessageRepository outboxMessageRepository,
             OrderStateMachine stateMachine,
             UuidV7Generator uuidGenerator,
             HashingService hashingService,
@@ -57,6 +63,7 @@ public class OrderApplicationService {
         this.orderRepository = orderRepository;
         this.instructionRepository = instructionRepository;
         this.eventRepository = eventRepository;
+        this.outboxMessageRepository = outboxMessageRepository;
         this.stateMachine = stateMachine;
         this.uuidGenerator = uuidGenerator;
         this.hashingService = hashingService;
@@ -148,6 +155,24 @@ public class OrderApplicationService {
                 payloadHash,
                 command.traceId(),
                 payloadJson,
+                now
+        );
+        outboxMessageRepository.appendBrokerCommand(
+                uuidGenerator.generate(),
+                order.orderId().value(),
+                MessageTypes.SUBMIT_ORDER_COMMAND,
+                new SubmitOrderCommandPayload(
+                        order.orderId().value(),
+                        order.accountId().value(),
+                        order.market().name(),
+                        order.symbol().value(),
+                        order.side().name(),
+                        order.orderType().name(),
+                        order.timeInForce().name(),
+                        order.orderQty().value(),
+                        order.limitPrice().value().toPlainString()
+                ),
+                command.traceId(),
                 now
         );
 
@@ -269,6 +294,14 @@ public class OrderApplicationService {
                 payloadHash,
                 command.traceId(),
                 "{\"previousStatus\":\"%s\",\"currentStatus\":\"%s\"}".formatted(order.status(), nextOrder.status()),
+                now
+        );
+        outboxMessageRepository.appendBrokerCommand(
+                uuidGenerator.generate(),
+                orderId.value(),
+                MessageTypes.CANCEL_ORDER_COMMAND,
+                new CancelOrderCommandPayload(orderId.value()),
+                command.traceId(),
                 now
         );
 

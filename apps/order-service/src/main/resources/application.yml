@@ -4,3 +4,24 @@ spring:
   jpa:
     hibernate:
       ddl-auto: none
+  kafka:
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+order-service:
+  messaging:
+    kafka:
+      topic-bootstrap-enabled: false
+      topic-partitions: 1
+      topic-replication-factor: 1
+    outbox:
+      enabled: false
+      batch-size: 50
+      lock-ttl: 30s
+      publish-timeout: 10s
+      initial-retry-delay: 1s
+      max-retry-delay: 5m
+      retry-backoff-multiplier: 2.0
+      max-retry-count: 12
+      poll-delay-ms: 1000
