@@ -1,2 +1,7 @@
 server:
   port: 8083
+
+trading:
+  broker-simulator:
+    tcp:
+      port: 9093

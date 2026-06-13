@@ -1,3 +1,8 @@
 spring:
   application:
     name: broker-simulator
+
+trading:
+  broker-simulator:
+    tcp:
+      port: 9093

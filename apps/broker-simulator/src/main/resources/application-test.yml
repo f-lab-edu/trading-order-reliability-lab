@@ -1,2 +1,7 @@
 server:
   port: 0
+
+trading:
+  broker-simulator:
+    tcp:
+      port: 0
