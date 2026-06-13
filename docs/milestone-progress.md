@@ -19,10 +19,11 @@
 | 항목 | 값 |
 | --- | --- |
 | 마지막 갱신 | 2026-06-13 |
-| 현재 active milestone | `M3` Broker protocol과 Simulator |
+| 현재 active milestone | `M4` 정상 주문 end-to-end 착수 대기 |
 | M2 상태 | 완료된 기반으로 취급 |
-| 다음 권장 작업 | M3 변경분 최종 점검 후 커밋/PR 또는 M4 착수 |
-| 최신 작업 로그 | `local-notes/ai-work-log/2026-06-13-M3.md` |
+| M3 상태 | 완료 |
+| 다음 권장 작업 | M4 설계 범위 확인 후 Broker Gateway 정상 주문 E2E 착수 |
+| 최신 완료 milestone 작업 로그 | `local-notes/ai-work-log/2026-06-13-M3.md` |
 | 최신 전체 검증 | `./gradlew --gradle-user-home .gradle test` 성공 |
 
 ---
@@ -34,7 +35,8 @@
 | `M0` 프로젝트 기반 | 완료된 기반으로 취급 | 현재 multi-module, service app, Gradle/Docker/Test 기반 위에서 M1/M2 작업 진행 중 |
 | `M1` Order 도메인 코어 | 완료된 기반으로 취급 | 주문 생성/취소 skeleton, 상태 전이, DB/API 기반 위에서 M2 outbox 연동 완료 |
 | `M2` Reliable messaging 기반 | 완료된 기반으로 취급 | outbox, publisher, processed guard, envelope, traceId, 최소 parking log 구현 및 리뷰 루프 완료 후 M3 착수 기준선으로 사용 |
-| `M3` Broker protocol과 Simulator | 구현 완료, 최종 정리 단계 | broker-protocol codec, malformed 분류, Broker Simulator TCP server/admin API, ACK/RJCT/OSTS/duplicate fill 검증 구현 |
+| `M3` Broker protocol과 Simulator | 완료 | broker-protocol codec, malformed 분류, Broker Simulator TCP server/admin API, ACK/RJCT/OSTS/duplicate fill 검증 구현, 문서화와 커밋 완료 |
+| `M4` 정상 주문 end-to-end | 착수 대기 | Gateway command consumer/TCP client, canonical broker event, Order Service broker event consumer 연결 예정 |
 
 상태 표현 기준:
 
@@ -42,6 +44,33 @@
 * `진행 중`: 구현 또는 리뷰 피드백 반영 중
 * `구현 완료, 최종 정리 단계`: 주요 구현과 검증은 끝났으나 커밋/PR/문서 동기화 확인이 남음
 * `완료`: 커밋/PR 또는 사용자 승인 기준으로 milestone 종료 처리됨
+* `착수 대기`: 이전 milestone 완료 후 설계 확인과 구현 계획 수립이 필요한 상태
+
+---
+
+## M3 완료 판정 메모
+
+M3 범위는 `docs/13-development-milestones.md`의 "Broker protocol과 Simulator"이다.
+현재 구현은 다음 기준을 만족하는 상태로 판단한다.
+
+* `libs:broker-protocol`이 10-A fixed-length TCP protocol의 8 byte length header, 192 byte common header, msgId별 body encode/decode를 제공한다.
+* `ORDR`, `ACKN`, `RJCT`, `FILL`, `CXLQ`, `CXLA`, `CXLR`, `EXPR`, `OSTQ`, `OSTS` round-trip이 codec test로 고정됐다.
+* malformed frame/header/body와 business anomaly가 분리된다.
+* Broker Simulator가 Netty TCP server로 `ORDR -> ACKN/RJCT`, `OSTQ -> OSTS`를 처리한다.
+* local/test profile 전용 admin API가 scenario 전환, reset, 주문 조회, duplicate fill injection을 제공한다.
+* duplicate fill injection은 동일 논리 `FILL` 2회 전송과 동일 `wireMessageId`, 원 주문 `traceId` 보존을 검증한다.
+* Broker Simulator 주요 TCP 흐름은 `docs/14-api-sequence-diagrams.md`에 sequence diagram으로 기록됐다.
+* 최종 검증 `./gradlew --gradle-user-home .gradle test`가 성공했다.
+
+M3에서 의도적으로 아직 하지 않는 것:
+
+* Broker Gateway TCP client와 Kafka command consumer 연결
+* Gateway DB journal, command attempt, broker order binding 완성
+* canonical broker event 발행
+* Order Service broker event consumer와 상태 반영 end-to-end
+* timeout, cancel, reconciliation, partial fill/cancel race, 전체 상태조회 matrix
+
+위 항목은 M4 이후, 특히 M4/M5/M7/M8/M9/M10에서 다룬다.
 
 ---
 
@@ -116,9 +145,9 @@ M2에서 의도적으로 아직 하지 않는 것:
 
 개발 요청이 milestone을 명시하지 않으면 다음처럼 판단한다.
 
-1. 요청이 M2 messaging 기반의 마무리, 커밋, 리뷰, 문서 보강이면 `M2`를 active milestone로 유지한다.
-2. 요청이 broker protocol, TCP frame, simulator라면 `M3` 착수로 판단한다.
-3. 요청이 정상 주문 end-to-end Kafka consumer 연결이라면 `M4` 선행 조건으로 M3 완료 여부를 먼저 확인한다.
-4. 요청이 parking consumer handler 완성, 반복 실패 5회 후 parking, malformed/stale/EOD hardening이면 `M10` 범위일 수 있으므로 M2 작업으로 끌어오지 않는다.
+1. 요청이 정상 주문 end-to-end, Broker Gateway command consumer, Gateway TCP client, canonical broker event, Order Service broker event consumer 연결이라면 `M4`로 판단한다.
+2. 요청이 M3 broker protocol/TCP frame/Simulator 보강이면 M4 착수 전에 M3 완료 상태와 호환성 영향을 먼저 확인한다.
+3. 요청이 취소 command 흐름이면 `M5`, 부분체결 후 취소 경합이면 `M6`, submit uncertainty/reconciliation이면 `M7`, cancel uncertainty/reconciliation이면 `M8` 범위로 판단한다.
+4. 요청이 parking consumer handler 완성, 반복 실패 5회 후 parking, malformed/stale/EOD hardening이면 `M10` 범위일 수 있으므로 M4 정상 주문 E2E 작업으로 끌어오지 않는다.
 
 작업 후에는 이 문서의 "현재 상태 요약", "Milestone별 진행 상태", "다음 thread가 반드시 확인할 위험"을 갱신한다.
