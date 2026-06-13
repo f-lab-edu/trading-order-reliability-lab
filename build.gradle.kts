@@ -29,4 +29,23 @@ subprojects {
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
     }
+
+    plugins.withId("org.springframework.boot") {
+        val mockitoAgent = configurations.create("mockitoAgent") {
+            isCanBeConsumed = false
+            isCanBeResolved = true
+        }
+        dependencies.add("mockitoAgent", "org.mockito:mockito-core") {
+            isTransitive = false
+        }
+
+        tasks.withType<Test>().configureEach {
+            doFirst {
+                jvmArgs(
+                    "-javaagent:${mockitoAgent.singleFile.absolutePath}",
+                    "-Xshare:off",
+                )
+            }
+        }
+    }
 }
