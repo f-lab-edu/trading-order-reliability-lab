@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -31,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
 @RequestMapping("/api/orders")
@@ -42,9 +44,11 @@ public class OrderController {
     private static final int MAX_TRACE_ID_LENGTH = 64;
 
     private final OrderApplicationService orderApplicationService;
+    private final OrderStatusSsePublisher ssePublisher;
 
-    public OrderController(OrderApplicationService orderApplicationService) {
+    public OrderController(OrderApplicationService orderApplicationService, OrderStatusSsePublisher ssePublisher) {
         this.orderApplicationService = orderApplicationService;
+        this.ssePublisher = ssePublisher;
     }
 
     @PostMapping
@@ -78,6 +82,11 @@ public class OrderController {
     @GetMapping("/{orderId}")
     public OrderDetailResponse getOrder(@PathVariable UUID orderId) {
         return OrderDetailResponse.from(orderApplicationService.getOrder(orderId));
+    }
+
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamOrders() {
+        return ssePublisher.subscribe();
     }
 
     @GetMapping

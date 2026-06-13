@@ -1,0 +1,62 @@
+CREATE TABLE broker_order_binding (
+    id BINARY(16) NOT NULL,
+    order_id BINARY(16) NOT NULL,
+    broker_code VARCHAR(32) NOT NULL,
+    broker_order_id VARCHAR(64) NULL,
+    bound_at DATETIME(3) NOT NULL,
+    accepted_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT uk_broker_order_binding_order_broker UNIQUE (order_id, broker_code),
+    CONSTRAINT uk_broker_order_binding_broker_order UNIQUE (broker_code, broker_order_id),
+    INDEX idx_broker_order_binding_order_id (order_id)
+);
+
+CREATE TABLE broker_command_attempt (
+    id BINARY(16) NOT NULL,
+    source_message_id BINARY(16) NULL,
+    order_id BINARY(16) NOT NULL,
+    command_type VARCHAR(32) NOT NULL,
+    broker_code VARCHAR(32) NOT NULL,
+    wire_message_id VARCHAR(64) NOT NULL,
+    trace_id VARCHAR(64) NULL,
+    broker_order_id VARCHAR(64) NULL,
+    payload_json JSON NOT NULL,
+    transport_state VARCHAR(32) NOT NULL,
+    sent_at DATETIME(3) NULL,
+    ack_deadline_at DATETIME(3) NULL,
+    completed_at DATETIME(3) NULL,
+    error_code VARCHAR(64) NULL,
+    error_message VARCHAR(512) NULL,
+    created_at DATETIME(3) NOT NULL,
+    updated_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT uk_broker_command_attempt_wire UNIQUE (broker_code, wire_message_id),
+    INDEX idx_broker_command_attempt_order_type_created (order_id, command_type, created_at),
+    INDEX idx_broker_command_attempt_state_deadline (transport_state, ack_deadline_at),
+    INDEX idx_broker_command_attempt_source_message (source_message_id)
+);
+
+CREATE TABLE broker_message_journal (
+    id BINARY(16) NOT NULL,
+    broker_code VARCHAR(32) NOT NULL,
+    direction VARCHAR(8) NOT NULL,
+    msg_id VARCHAR(16) NULL,
+    wire_message_id VARCHAR(64) NULL,
+    trace_id VARCHAR(64) NULL,
+    broker_order_id VARCHAR(64) NULL,
+    order_id BINARY(16) NULL,
+    parse_status VARCHAR(32) NOT NULL,
+    error_code VARCHAR(64) NULL,
+    error_message VARCHAR(512) NULL,
+    raw_message TEXT NOT NULL,
+    parsed_payload_json JSON NULL,
+    payload_hash CHAR(64) NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (id),
+    INDEX idx_broker_message_journal_broker_recorded (broker_code, recorded_at),
+    INDEX idx_broker_message_journal_wire_message (wire_message_id),
+    INDEX idx_broker_message_journal_trace (trace_id),
+    INDEX idx_broker_message_journal_broker_order (broker_order_id, recorded_at),
+    INDEX idx_broker_message_journal_order (order_id, recorded_at),
+    INDEX idx_broker_message_journal_parse_status (parse_status, recorded_at)
+);

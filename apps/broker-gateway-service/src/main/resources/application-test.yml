@@ -4,3 +4,12 @@ server:
 spring:
   kafka:
     bootstrap-servers: localhost:19092
+
+gateway:
+  messaging:
+    kafka:
+      consumer-enabled: false
+    outbox:
+      enabled: false
+  broker:
+    command-dispatch-enabled: false

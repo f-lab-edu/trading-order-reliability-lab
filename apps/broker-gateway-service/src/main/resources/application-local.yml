@@ -9,3 +9,12 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
   kafka:
     bootstrap-servers: localhost:19092,localhost:29092,localhost:39092
+
+gateway:
+  messaging:
+    kafka:
+      consumer-enabled: true
+    outbox:
+      enabled: true
+  broker:
+    command-dispatch-enabled: true

@@ -30,7 +30,7 @@ public class BrokerSimulatorEventPublisher {
     public DuplicateFillResult sendDuplicateFill(UUID orderId) {
         SimulatorOrder order = state.findByOrderId(orderId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "simulator order not found"));
-        if (order.status() != SimulatorOrderStatus.ACCEPTED) {
+        if (order.status() != SimulatorOrderStatus.ACCEPTED && order.status() != SimulatorOrderStatus.PARTIALLY_FILLED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "duplicate fill requires accepted order");
         }
         Channel channel = sessions.channelFor(orderId)
@@ -54,6 +54,45 @@ public class BrokerSimulatorEventPublisher {
         return new DuplicateFillResult(orderId, wireMessageId, 2);
     }
 
+    public FillResult sendFill(UUID orderId, long lastFillQty) {
+        SimulatorOrder order;
+        try {
+            order = state.applyFill(orderId, lastFillQty);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+        }
+        Channel channel = sessions.channelFor(orderId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "order TCP session is not active"));
+
+        String executionId = "EXEC-%s-%06d".formatted(orderId.toString().substring(0, 8), order.cumQty());
+        String wireMessageId = state.wireMessageIdForLogicalEvent("FILL:%s:%s".formatted(orderId, executionId));
+        Instant eventTime = Instant.now();
+        Fill fill = new Fill(
+                BrokerCommonHeader.of(BrokerMessageId.FILL, wireMessageId, order.orderId(), order.traceId(), eventTime),
+                order.brokerOrderId(),
+                executionId,
+                order.status() == SimulatorOrderStatus.FILLED ? "F" : "P",
+                lastFillQty,
+                order.cumQty(),
+                order.leavesQty(),
+                eventTime
+        );
+        channel.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(fill)));
+        return new FillResult(orderId, wireMessageId, executionId, lastFillQty, order.cumQty(), order.leavesQty());
+    }
+
     public record DuplicateFillResult(UUID orderId, String wireMessageId, int sentFrames) {
+    }
+
+    public record FillResult(
+            UUID orderId,
+            String wireMessageId,
+            String executionId,
+            long lastFillQty,
+            long cumQty,
+            long leavesQty
+    ) {
     }
 }

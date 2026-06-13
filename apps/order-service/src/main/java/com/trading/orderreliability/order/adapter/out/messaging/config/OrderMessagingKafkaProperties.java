@@ -6,6 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class OrderMessagingKafkaProperties {
 
     private boolean topicBootstrapEnabled;
+    private boolean brokerEventConsumerEnabled;
     private int topicPartitions = 1;
     private short topicReplicationFactor = 1;
 
@@ -15,6 +16,14 @@ public class OrderMessagingKafkaProperties {
 
     public void setTopicBootstrapEnabled(boolean topicBootstrapEnabled) {
         this.topicBootstrapEnabled = topicBootstrapEnabled;
+    }
+
+    public boolean isBrokerEventConsumerEnabled() {
+        return brokerEventConsumerEnabled;
+    }
+
+    public void setBrokerEventConsumerEnabled(boolean brokerEventConsumerEnabled) {
+        this.brokerEventConsumerEnabled = brokerEventConsumerEnabled;
     }
 
     public int getTopicPartitions() {

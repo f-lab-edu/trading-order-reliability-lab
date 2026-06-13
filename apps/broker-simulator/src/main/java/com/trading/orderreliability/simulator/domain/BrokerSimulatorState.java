@@ -102,6 +102,41 @@ public class BrokerSimulatorState {
         return findByBrokerOrderId(brokerOrderId).or(() -> findByOrderId(orderId));
     }
 
+    public SimulatorOrder applyFill(UUID orderId, long lastFillQty) {
+        if (lastFillQty <= 0) {
+            throw new IllegalArgumentException("lastFillQty must be positive");
+        }
+        return ordersById.compute(orderId, (ignored, current) -> {
+            if (current == null) {
+                throw new IllegalArgumentException("simulator order not found");
+            }
+            if (current.status() == SimulatorOrderStatus.REJECTED || current.status() == SimulatorOrderStatus.FILLED) {
+                throw new IllegalStateException("fill requires an active accepted order");
+            }
+            long nextCumQty = current.cumQty() + lastFillQty;
+            if (nextCumQty > current.orderQty()) {
+                throw new IllegalArgumentException("fill quantity exceeds remaining quantity");
+            }
+            long nextLeavesQty = current.orderQty() - nextCumQty;
+            SimulatorOrderStatus nextStatus = nextLeavesQty == 0
+                    ? SimulatorOrderStatus.FILLED
+                    : SimulatorOrderStatus.PARTIALLY_FILLED;
+            return new SimulatorOrder(
+                    current.orderId(),
+                    current.brokerOrderId(),
+                    current.accountId(),
+                    current.symbol(),
+                    current.traceId(),
+                    current.orderQty(),
+                    nextCumQty,
+                    nextLeavesQty,
+                    nextStatus,
+                    current.rejectCode(),
+                    Instant.now(clock)
+            );
+        });
+    }
+
     public String wireMessageIdForLogicalEvent(String logicalEventKey) {
         return wireMessageIdsByLogicalEvent.computeIfAbsent(
                 logicalEventKey,

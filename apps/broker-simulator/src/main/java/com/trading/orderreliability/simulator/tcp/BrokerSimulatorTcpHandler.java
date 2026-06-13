@@ -145,6 +145,12 @@ public class BrokerSimulatorTcpHandler extends SimpleChannelInboundHandler<Objec
         if (order.status() == SimulatorOrderStatus.REJECTED) {
             return "REJECTED";
         }
+        if (order.status() == SimulatorOrderStatus.PARTIALLY_FILLED) {
+            return "PARTIAL";
+        }
+        if (order.status() == SimulatorOrderStatus.FILLED) {
+            return "FILLED";
+        }
         return "ACCEPTED";
     }
 

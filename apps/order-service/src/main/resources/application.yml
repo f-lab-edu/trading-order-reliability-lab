@@ -5,6 +5,11 @@ spring:
     hibernate:
       ddl-auto: none
   kafka:
+    consumer:
+      group-id: order-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
@@ -13,6 +18,7 @@ order-service:
   messaging:
     kafka:
       topic-bootstrap-enabled: false
+      broker-event-consumer-enabled: false
       topic-partitions: 1
       topic-replication-factor: 1
     outbox:

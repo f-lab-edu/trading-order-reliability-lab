@@ -61,9 +61,23 @@ public class SimulatorAdminController {
         return eventPublisher.sendDuplicateFill(orderId);
     }
 
+    @PostMapping("/orders/{orderId}/fills")
+    public BrokerSimulatorEventPublisher.FillResult fill(
+            @PathVariable UUID orderId,
+            @RequestBody FillRequest request
+    ) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "request body must not be null");
+        }
+        return eventPublisher.sendFill(orderId, request.lastFillQty());
+    }
+
     public record ScenarioRequest(SimulatorScenario scenario) {
     }
 
     public record ScenarioResponse(SimulatorScenario scenario) {
+    }
+
+    public record FillRequest(long lastFillQty) {
     }
 }

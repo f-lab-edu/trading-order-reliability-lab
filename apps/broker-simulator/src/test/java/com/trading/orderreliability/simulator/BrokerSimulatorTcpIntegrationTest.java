@@ -125,6 +125,38 @@ class BrokerSimulatorTcpIntegrationTest {
     }
 
     @Test
+    @DisplayName("체결 주입 API는 부분체결과 완전체결 FILL frame을 원 주문 traceId로 전송한다")
+    void fillEndpointSendsPartialAndFullFillFrames() throws Exception {
+        putScenario(SimulatorScenario.ACK_SUCCESS);
+
+        try (Socket socket = connect()) {
+            send(socket, orderRequest("W-GW-ORDER-FILL-001"));
+            assertThat(receive(socket)).isInstanceOf(OrderAccepted.class);
+
+            postJson(
+                    "/api/simulator/orders/%s/fills".formatted(ORDER_ID),
+                    "{\"lastFillQty\":40}"
+            );
+            Fill partial = (Fill) receive(socket);
+
+            postJson(
+                    "/api/simulator/orders/%s/fills".formatted(ORDER_ID),
+                    "{\"lastFillQty\":60}"
+            );
+            Fill filled = (Fill) receive(socket);
+
+            assertThat(partial.fillStatus()).isEqualTo("P");
+            assertThat(partial.cumQty()).isEqualTo(40);
+            assertThat(partial.leavesQty()).isEqualTo(60);
+            assertThat(partial.header().traceId()).isEqualTo("trace-simulator-test");
+            assertThat(filled.fillStatus()).isEqualTo("F");
+            assertThat(filled.cumQty()).isEqualTo(100);
+            assertThat(filled.leavesQty()).isEqualTo(0);
+            assertThat(filled.header().traceId()).isEqualTo("trace-simulator-test");
+        }
+    }
+
+    @Test
     @DisplayName("잘못된 길이 헤더를 받으면 주문 상태를 바꾸지 않고 연결을 닫는다")
     void malformedLengthHeaderClosesConnection() throws Exception {
         try (Socket socket = connect()) {
@@ -160,6 +192,15 @@ class BrokerSimulatorTcpIntegrationTest {
     private void post(String path) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(adminUri(path))
                 .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+        int statusCode = httpClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+        assertThat(statusCode).isBetween(200, 299);
+    }
+
+    private void postJson(String path, String body) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(adminUri(path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
         int statusCode = httpClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
         assertThat(statusCode).isBetween(200, 299);

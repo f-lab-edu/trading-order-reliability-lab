@@ -21,6 +21,7 @@ public class MessageParkingLot {
 
     public static final String ERROR_CODE_SCHEMA_PARSE_FAILED = "SCHEMA_PARSE_FAILED";
     public static final String ERROR_CODE_REPEATED_FAILURE = "REPEATED_FAILURE";
+    public static final String ERROR_CODE_BROKER_EVENT_DEDUP_PAYLOAD_MISMATCH = "BROKER_EVENT_DEDUP_PAYLOAD_MISMATCH";
     public static final String NULL_PAYLOAD_TEXT = "<null>";
     private static final int MAX_ERROR_MESSAGE_LENGTH = 512;
 
@@ -85,6 +86,34 @@ public class MessageParkingLot {
                 envelope.traceId(),
                 ERROR_CODE_REPEATED_FAILURE,
                 retryCount,
+                writeJson(envelope),
+                errorMessage,
+                parkedAt,
+                parkedAt
+        );
+        return id;
+    }
+
+    @Transactional
+    public UUID parkEnvelope(
+            String sourceTopic,
+            String consumerName,
+            MessageEnvelope<?> envelope,
+            String errorCode,
+            String errorMessage,
+            Instant parkedAt
+    ) {
+        UUID id = uuidGenerator.generate();
+        insert(
+                id,
+                sourceTopic,
+                consumerName,
+                envelope.messageId(),
+                envelope.messageType(),
+                envelope.messageKey(),
+                envelope.traceId(),
+                errorCode,
+                0,
                 writeJson(envelope),
                 errorMessage,
                 parkedAt,

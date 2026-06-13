@@ -27,13 +27,28 @@ public class OrderEventRepository {
             String payloadJson,
             Instant occurredAt
     ) {
+        insert(eventId, orderId, eventType, source, null, dedupKey, payloadHash, traceId, payloadJson, occurredAt);
+    }
+
+    public void insert(
+            UUID eventId,
+            OrderId orderId,
+            String eventType,
+            String source,
+            UUID sourceMessageId,
+            String dedupKey,
+            String payloadHash,
+            String traceId,
+            String payloadJson,
+            Instant occurredAt
+    ) {
         jpaRepository.save(OrderEventEntity.builder()
                 .id(eventId)
                 .orderId(orderId.value())
                 .eventType(eventType)
                 .eventVersion(1)
                 .source(source)
-                .sourceMessageId(null)
+                .sourceMessageId(sourceMessageId)
                 .dedupKey(dedupKey)
                 .payloadHash(payloadHash)
                 .traceId(traceId)
@@ -41,5 +56,9 @@ public class OrderEventRepository {
                 .occurredAt(occurredAt)
                 .recordedAt(Instant.now())
                 .build());
+    }
+
+    public java.util.Optional<String> findPayloadHashByDedupKey(String dedupKey) {
+        return jpaRepository.findPayloadHashByDedupKey(dedupKey);
     }
 }

@@ -19,11 +19,11 @@
 | 항목 | 값 |
 | --- | --- |
 | 마지막 갱신 | 2026-06-13 |
-| 현재 active milestone | `M4` 정상 주문 end-to-end 착수 대기 |
+| 현재 active milestone | `M4` 정상 주문 end-to-end 구현 완료, 최종 정리 단계 |
 | M2 상태 | 완료된 기반으로 취급 |
 | M3 상태 | 완료 |
-| 다음 권장 작업 | M4 설계 범위 확인 후 Broker Gateway 정상 주문 E2E 착수 |
-| 최신 완료 milestone 작업 로그 | `local-notes/ai-work-log/2026-06-13-M3.md` |
+| 다음 권장 작업 | M4 최종 리뷰/커밋 또는 milestone completion workflow 진행 |
+| 최신 완료 milestone 작업 로그 | `local-notes/ai-work-log/2026-06-13-M4.md` |
 | 최신 전체 검증 | `./gradlew --gradle-user-home .gradle test` 성공 |
 
 ---
@@ -36,7 +36,7 @@
 | `M1` Order 도메인 코어 | 완료된 기반으로 취급 | 주문 생성/취소 skeleton, 상태 전이, DB/API 기반 위에서 M2 outbox 연동 완료 |
 | `M2` Reliable messaging 기반 | 완료된 기반으로 취급 | outbox, publisher, processed guard, envelope, traceId, 최소 parking log 구현 및 리뷰 루프 완료 후 M3 착수 기준선으로 사용 |
 | `M3` Broker protocol과 Simulator | 완료 | broker-protocol codec, malformed 분류, Broker Simulator TCP server/admin API, ACK/RJCT/OSTS/duplicate fill 검증 구현, 문서화와 커밋 완료 |
-| `M4` 정상 주문 end-to-end | 착수 대기 | Gateway command consumer/TCP client, canonical broker event, Order Service broker event consumer 연결 예정 |
+| `M4` 정상 주문 end-to-end | 구현 완료, 최종 정리 단계 | SubmitOrderCommand -> Gateway ORDR -> ACKN/RJCT/FILL canonical broker event -> Order Service 상태 반영 -> 최소 SSE까지 구현. 완료 처리는 커밋/태그 workflow 전이라 아직 `완료`로 표시하지 않음 |
 
 상태 표현 기준:
 
@@ -71,6 +71,38 @@ M3에서 의도적으로 아직 하지 않는 것:
 * timeout, cancel, reconciliation, partial fill/cancel race, 전체 상태조회 matrix
 
 위 항목은 M4 이후, 특히 M4/M5/M7/M8/M9/M10에서 다룬다.
+
+---
+
+## M4 구현 완료, 최종 정리 단계 판정 메모
+
+M4 범위는 `docs/13-development-milestones.md`의 "정상 주문 End-to-End"이다.
+현재 구현은 다음 기준을 만족하는 상태로 판단한다.
+
+* `libs:common-messaging`에 broker event payload와 message type 상수를 추가했다.
+* Broker Gateway가 `SubmitOrderCommand`를 processed message로 멱등 처리하고, durable command attempt를 저장한 뒤 transaction 밖 dispatcher에서 `ORDR`를 송신한다.
+* Gateway inbound handler가 수신 frame을 journal에 기록하고, `ACKN/RJCT/FILL`을 binding/attempt 갱신과 broker event outbox insert로 변환한다.
+* Gateway는 M4 범위 밖 `CancelOrderCommand`, `QueryOrderStatusCommand`를 TCP 송신하지 않고 `UNSUPPORTED_COMMAND_FOR_M4`로 parking한다.
+* stale `DISPATCHING` attempt는 재전송하지 않고 내부 상태 `UNKNOWN` 및 parking으로 격리한다. `UNKNOWN` canonical event 발행은 M7 범위로 남긴다.
+* Order Service가 `trading.broker.event.v1` consumer를 통해 ACK/Reject/Partial Fill/Full Fill을 processed message, dedup key, order event와 함께 적용한다.
+* Order Service는 동일 dedup key + 동일 payload hash를 skip하고, 동일 key + 다른 payload hash를 상태 변경 없이 parking한다.
+* 최소 SSE endpoint `GET /api/orders/stream`이 `order-status-changed` 이벤트를 발행한다.
+* Broker Simulator는 `POST /api/simulator/orders/{orderId}/fills`로 partial/full fill 주입을 지원한다.
+* M4 E2E smoke는 HTTP 주문 생성, Order outbox publish, Gateway Kafka consume, TCP `ORDR`, fake broker `ACKN`, Gateway broker event outbox publish, Order Service `LIVE` 조회까지 검증한다.
+
+검증:
+
+* `git diff --check`
+* `./gradlew --gradle-user-home .gradle :apps:broker-gateway-service:test --tests '*SubmitOrderEndToEndSmokeIntegrationTest'`
+* `./gradlew --gradle-user-home .gradle :libs:common-messaging:test :apps:broker-simulator:test :apps:broker-gateway-service:test :apps:order-service:test`
+* `./gradlew --gradle-user-home .gradle test`
+
+M4에서 의도적으로 아직 하지 않는 것:
+
+* cancel 정상/거절 흐름과 partial fill 이후 cancel race
+* submit timeout의 canonical `UNKNOWN` event 발행과 reconciliation
+* stale/EOD sweep, replay/reinject 도구, 운영 metric/dashboard
+* 계정별 SSE 필터링과 production-grade SSE fanout
 
 ---
 

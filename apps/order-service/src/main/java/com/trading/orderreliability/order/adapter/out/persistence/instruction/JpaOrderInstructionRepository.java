@@ -51,4 +51,25 @@ public interface JpaOrderInstructionRepository extends JpaRepository<OrderInstru
     );
 
     Optional<OrderInstructionEntity> findByOrderIdAndInstructionTypeAndStatus(UUID orderId, String instructionType, String status);
+
+    @Modifying
+    @Query(value = """
+            UPDATE order_instruction
+            SET status = :status,
+                result_code = :resultCode,
+                result_message = :resultMessage,
+                updated_at = :updatedAt,
+                resolved_at = :resolvedAt
+            WHERE order_id = :orderId
+              AND instruction_type = 'PLACE'
+              AND status = 'REQUESTED'
+            """, nativeQuery = true)
+    int resolveRequestedPlaceInstruction(
+            @Param("orderId") byte[] orderId,
+            @Param("status") String status,
+            @Param("resultCode") String resultCode,
+            @Param("resultMessage") String resultMessage,
+            @Param("updatedAt") Instant updatedAt,
+            @Param("resolvedAt") Instant resolvedAt
+    );
 }

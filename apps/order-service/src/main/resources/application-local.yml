@@ -14,5 +14,6 @@ order-service:
   messaging:
     kafka:
       topic-bootstrap-enabled: true
+      broker-event-consumer-enabled: true
     outbox:
       enabled: true

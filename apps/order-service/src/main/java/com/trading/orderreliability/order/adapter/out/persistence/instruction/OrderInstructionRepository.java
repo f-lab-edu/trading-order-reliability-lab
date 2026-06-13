@@ -72,6 +72,23 @@ public class OrderInstructionRepository {
                 .map(this::toDomain);
     }
 
+    public int resolveRequestedPlaceInstruction(
+            OrderId orderId,
+            OrderInstructionStatus status,
+            String resultCode,
+            String resultMessage,
+            java.time.Instant resolvedAt
+    ) {
+        return jpaRepository.resolveRequestedPlaceInstruction(
+                UuidBytes.toBytes(orderId.value()),
+                status.name(),
+                resultCode,
+                resultMessage,
+                resolvedAt,
+                resolvedAt
+        );
+    }
+
     private OrderInstruction toDomain(OrderInstructionEntity entity) {
         return new OrderInstruction(
                 new OrderInstructionId(entity.getId()),
