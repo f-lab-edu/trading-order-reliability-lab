@@ -163,3 +163,140 @@ sequenceDiagram
 * 외부 브로커 호출은 API transaction 안에서 수행하지 않는다.
 * `traceId`는 request header `X-Trace-Id`가 있으면 사용하고, 없으면 Order Service가 생성해 instruction과 outbox header, Kafka envelope까지 전파한다.
 
+---
+
+## 14.4 Broker Simulator M3 TCP 흐름
+
+### 범위
+
+이 diagram은 M3 구현 기준의 Broker Simulator 내부 흐름을 기록한다.
+Broker Gateway는 아직 M4 이후 구현 범위이므로, 여기서는 TCP client 역할로만 표현한다.
+
+M3 Broker Simulator는 다음 흐름을 제공한다.
+
+* local/test profile 전용 admin API로 scenario와 in-memory state를 제어한다.
+* TCP fixed-length frame을 Netty pipeline에서 분리한 뒤 `BrokerFrameCodec`으로 decode한다.
+* `ORDR` 요청은 현재 scenario에 따라 `ACKN` 또는 `RJCT`로 응답한다.
+* `OSTQ` 상태조회 요청은 in-memory 주문 상태를 `OSTS` snapshot으로 응답한다.
+* duplicate fill admin API는 같은 논리 `FILL` frame을 같은 `wireMessageId`와 원 주문 `traceId`로 2회 전송한다.
+* malformed frame/header/body는 Simulator 주문 상태를 변경하지 않고 log 후 connection close로 격리한다.
+
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as Test or Operator
+    participant AC as SimulatorAdminController<br/>(local/test profile)
+    participant ST as BrokerSimulatorState
+    participant EP as BrokerSimulatorEventPublisher
+    participant SS as BrokerSimulatorClientSessions
+    participant C as TCP Client<br/>(Gateway in M4+)
+    participant FD as BrokerSimulatorFrameDecoder
+    participant TH as BrokerSimulatorTcpHandler
+    participant CO as BrokerFrameCodec
+    participant CH as Netty Channel
+
+    opt Scenario setup
+        T->>AC: PUT /api/simulator/scenario<br/>ACK_SUCCESS or REJECT_SUCCESS
+        AC->>ST: setScenario(scenario)
+        ST-->>AC: current scenario
+        AC-->>T: ScenarioResponse
+    end
+
+    opt State reset
+        T->>AC: POST /api/simulator/reset
+        AC->>ST: reset()
+        AC-->>T: 204 No Content
+    end
+
+    C->>FD: Send TCP bytes<br/>8-byte length + common header + body
+
+    alt Malformed frame length
+        FD-->>TH: BrokerSimulatorMalformedFrame(FRAME, reason)
+        TH->>TH: log warn
+        TH->>CH: close()
+    else Complete frame
+        FD-->>TH: byte[] frame
+        TH->>CO: decode(frame)
+
+        alt Malformed header or body
+            CO-->>TH: BrokerParseResult.Malformed(type, reason)
+            TH->>TH: log warn
+            TH->>CH: close()
+        else Parsed broker message
+            alt ORDR decoded
+                CO-->>TH: BrokerParseResult.Success(OrderRequest)
+
+                alt Scenario == REJECT_SUCCESS
+                    TH->>ST: reject(orderRequest)
+                    ST-->>TH: SimulatorOrder(status=REJECTED)
+                    TH->>TH: Build RJCT<br/>echo request wireMessageId<br/>preserve or generate traceId
+                    TH->>CO: encode(OrderRejected)
+                    CO-->>TH: byte[] responseFrame
+                    TH->>CH: writeAndFlush(responseFrame)
+                    TH->>SS: register(orderId, channel)
+                    CH-->>C: RJCT TCP frame
+                else Scenario == ACK_SUCCESS
+                    TH->>ST: accept(orderRequest)
+                    ST-->>TH: SimulatorOrder(status=ACCEPTED,<br/>brokerOrderId, traceId)
+                    TH->>TH: Build ACKN<br/>echo request wireMessageId<br/>preserve or generate traceId
+                    TH->>SS: register(orderId, channel)
+                    TH->>CO: encode(OrderAccepted)
+                    CO-->>TH: byte[] responseFrame
+                    TH->>CH: writeAndFlush(responseFrame)
+                    CH-->>C: ACKN TCP frame
+                end
+            else OSTQ decoded
+                CO-->>TH: BrokerParseResult.Success(StatusQuery)
+                TH->>ST: findForStatusQuery(orderId, brokerOrderId)
+
+                alt Existing order
+                    ST-->>TH: SimulatorOrder
+                    TH->>TH: Build OSTS<br/>ACCEPTED or REJECTED
+                else Unknown order
+                    ST-->>TH: empty
+                    TH->>TH: Build OSTS<br/>NOT_FOUND
+                end
+
+                TH->>CO: encode(StatusSnapshot)
+                CO-->>TH: byte[] responseFrame
+                TH->>CH: writeAndFlush(responseFrame)
+                CH-->>C: OSTS TCP frame
+            end
+        end
+    end
+
+    opt Duplicate fill injection
+        T->>AC: POST /api/simulator/orders/{orderId}/duplicate-fill
+        AC->>EP: sendDuplicateFill(orderId)
+        EP->>ST: findByOrderId(orderId)
+        ST-->>EP: SimulatorOrder<br/>brokerOrderId, traceId, quantities
+        EP->>SS: channelFor(orderId)
+        SS-->>EP: active Netty channel
+        EP->>EP: Build two FILL messages<br/>same wireMessageId, same traceId
+        EP->>CO: encode(FillEvent 1)
+        CO-->>EP: byte[] frame 1
+        EP->>CH: writeAndFlush(frame 1)
+        CH-->>C: FILL TCP frame
+        EP->>CO: encode(FillEvent 2)
+        CO-->>EP: byte[] frame 2
+        EP->>CH: writeAndFlush(frame 2)
+        CH-->>C: Duplicate FILL TCP frame
+        EP-->>AC: DuplicateFillResult(wireMessageId, sentCount=2)
+        AC-->>T: DuplicateFillResult
+    end
+
+    opt TCP channel closed
+        CH-->>TH: channelInactive()
+        TH->>SS: unregister(channel)
+    end
+```
+
+### 핵심 포인트
+
+* `ACK_SUCCESS`에서 `ACKN` frame 직렬화는 `handleOrderRequest()`의 `write(context, response)`가 공통 `write()`를 거쳐 `BrokerFrameCodec.encode(message)`를 호출하는 흐름이다.
+* request/response correlation을 위해 `ACKN`, `RJCT`, `OSTS`는 요청의 `wireMessageId`를 echo한다.
+* `traceId`는 요청 header에 있으면 보존하고, 없으면 Simulator가 `trace-simulator-{orderId}` 형식으로 생성한다.
+* duplicate `FILL`은 원 주문의 `traceId`와 같은 `wireMessageId`를 재사용해 Gateway/Order Service의 dedup 검증 입력으로 사용한다.
+* malformed 입력은 상태 저장소를 변경하지 않는다. 현재 M3 Simulator 정책은 WARN log 후 channel close이며, Gateway journal/metric 연결은 M4 이후 범위다.

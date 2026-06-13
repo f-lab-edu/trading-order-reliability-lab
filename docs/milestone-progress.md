@@ -18,11 +18,11 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 마지막 갱신 | 2026-06-11 |
-| 현재 active milestone | `M2` Reliable messaging 기반 |
-| M2 상태 | 구현 및 reviewer/design_guardian 피드백 루프 완료 |
-| 다음 권장 작업 | M2 변경분 최종 점검 후 커밋/PR 또는 M3 착수 |
-| 최신 작업 로그 | `local-notes/ai-work-log/2026-06-10-M2.md` |
+| 마지막 갱신 | 2026-06-13 |
+| 현재 active milestone | `M3` Broker protocol과 Simulator |
+| M2 상태 | 완료된 기반으로 취급 |
+| 다음 권장 작업 | M3 변경분 최종 점검 후 커밋/PR 또는 M4 착수 |
+| 최신 작업 로그 | `local-notes/ai-work-log/2026-06-13-M3.md` |
 | 최신 전체 검증 | `./gradlew --gradle-user-home .gradle test` 성공 |
 
 ---
@@ -33,8 +33,8 @@
 | --- | --- | --- |
 | `M0` 프로젝트 기반 | 완료된 기반으로 취급 | 현재 multi-module, service app, Gradle/Docker/Test 기반 위에서 M1/M2 작업 진행 중 |
 | `M1` Order 도메인 코어 | 완료된 기반으로 취급 | 주문 생성/취소 skeleton, 상태 전이, DB/API 기반 위에서 M2 outbox 연동 완료 |
-| `M2` Reliable messaging 기반 | 구현 완료, 최종 정리 단계 | outbox, publisher, processed guard, envelope, traceId, 최소 parking log 구현 및 리뷰 루프 완료 |
-| `M3` Broker protocol과 Simulator | 미착수 | M2 최종 커밋/정리 이후 착수 |
+| `M2` Reliable messaging 기반 | 완료된 기반으로 취급 | outbox, publisher, processed guard, envelope, traceId, 최소 parking log 구현 및 리뷰 루프 완료 후 M3 착수 기준선으로 사용 |
+| `M3` Broker protocol과 Simulator | 구현 완료, 최종 정리 단계 | broker-protocol codec, malformed 분류, Broker Simulator TCP server/admin API, ACK/RJCT/OSTS/duplicate fill 검증 구현 |
 
 상태 표현 기준:
 

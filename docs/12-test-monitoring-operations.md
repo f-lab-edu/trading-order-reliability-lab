@@ -210,6 +210,19 @@ Phase 1에서는 다음 시나리오를 주입할 수 있어야 한다.
 
 시나리오 주입 API는 로컬/테스트 환경 전용으로 둔다.
 
+M3의 최소 Simulator admin API는 TCP protocol과 Simulator 완료 기준 검증에 필요한 좁은 범위로 둔다.
+Phase 1 전체 시나리오 목록 중 timeout, cancel race, 순서 역전, 상태별 snapshot matrix는 M4 이후 Gateway/Order Service 연결 단계에서 확장한다.
+
+| Method | Path | 목적 |
+| --- | --- | --- |
+| `PUT` | `/api/simulator/scenario` | `ACK_SUCCESS`, `REJECT_SUCCESS` 전환 |
+| `POST` | `/api/simulator/reset` | in-memory 주문/이벤트 상태 초기화 |
+| `GET` | `/api/simulator/orders` | Simulator 주문 상태 목록 조회 |
+| `GET` | `/api/simulator/orders/{orderId}` | Simulator 주문 상태 단건 조회 |
+| `POST` | `/api/simulator/orders/{orderId}/duplicate-fill` | 동일 논리 `FILL` 2회 전송과 동일 `wireMessageId` 재사용 검증 |
+
+M3 Broker Simulator의 TCP request/response, malformed 격리, duplicate fill injection 흐름은 `docs/14-api-sequence-diagrams.md`의 "Broker Simulator M3 TCP 흐름" sequence diagram에 기록한다.
+
 ---
 
 ## 12.5 테스트 데이터 원칙

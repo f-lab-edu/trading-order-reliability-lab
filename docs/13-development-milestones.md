@@ -290,6 +290,8 @@ Gateway와 Simulator가 공유하는 TCP fixed-length protocol을 구현하고, 
 * Broker Simulator Netty TCP server 구현
 * Simulator 주문 상태 저장소 구현
 * 시나리오 주입 API 최소 구현
+  * M3 최소 범위는 `ACK_SUCCESS`, `REJECT_SUCCESS`, reset, 주문 상태 조회, 동일 논리 `FILL` 중복 전송 검증이다.
+  * timeout, cancel race, 순서 역전, 상태별 snapshot matrix는 Gateway/Order Service 연결 milestone에서 확장한다.
 
 #### 산출물
 
@@ -319,6 +321,7 @@ Gateway와 Simulator가 공유하는 TCP fixed-length protocol을 구현하고, 
 * Gateway DB journal 완성
 * canonical broker event 전체 변환
 * Order Service 상태 반영 end-to-end
+* Phase 1 전체 Simulator scenario matrix 완성
 
 ---
 
