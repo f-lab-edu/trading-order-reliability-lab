@@ -83,7 +83,7 @@ class BrokerEventConsumerIntegrationTest extends MySqlTestContainerSupport {
     @Test
     @DisplayName("BrokerOrderAcknowledged Kafka event는 processed message를 거쳐 주문을 LIVE로 전환한다")
     void brokerAcknowledgedKafkaEventMovesOrderToLiveThroughProcessedMessage() throws Exception {
-        Order order = createOrder("m4-kafka-ack-order");
+        Order order = createOrder("broker-kafka-ack-order");
         MessageEnvelope<JsonNode> envelope = ackEnvelope(order.orderId().value(), "dedup-kafka-ack", "hash-kafka-ack");
 
         kafkaTemplate.send(MessagingTopics.BROKER_EVENT, order.orderId().value().toString(), envelope).get();
@@ -96,7 +96,7 @@ class BrokerEventConsumerIntegrationTest extends MySqlTestContainerSupport {
     @Test
     @DisplayName("동일 BrokerOrderAcknowledged Kafka event 재수신은 processed message로 한 번만 적용된다")
     void duplicateBrokerAcknowledgedKafkaEventIsAppliedOnceByProcessedMessage() throws Exception {
-        Order order = createOrder("m4-kafka-duplicate-order");
+        Order order = createOrder("broker-kafka-duplicate-order");
         MessageEnvelope<JsonNode> envelope = ackEnvelope(order.orderId().value(), "dedup-kafka-duplicate", "hash-kafka-duplicate");
 
         kafkaTemplate.send(MessagingTopics.BROKER_EVENT, order.orderId().value().toString(), envelope).get();
@@ -120,7 +120,7 @@ class BrokerEventConsumerIntegrationTest extends MySqlTestContainerSupport {
     private Order createOrder(String clientOrderId) {
         return orderApplicationService.createOrder(new PlaceOrderCommand(
                 clientOrderId,
-                new AccountId("ACC-M4-KAFKA"),
+                new AccountId("ACC-BROKER-KAFKA"),
                 Market.US,
                 new Symbol("AAPL"),
                 OrderSide.BUY,

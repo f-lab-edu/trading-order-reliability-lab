@@ -117,6 +117,7 @@ public class GatewayJdbcRepository {
                         FROM broker_command_attempt
                         WHERE command_type = 'SUBMIT'
                           AND transport_state = 'CREATED'
+                          AND ack_deadline_at IS NULL
                         ORDER BY created_at
                         LIMIT ?
                         """,
@@ -126,17 +127,23 @@ public class GatewayJdbcRepository {
     }
 
     @Transactional
-    public List<GatewayCommandAttemptRecord> claimCreatedSubmitAttempts(int limit, Instant claimedAt) {
+    public List<GatewayCommandAttemptRecord> claimCreatedSubmitAttempts(
+            int limit,
+            Instant claimedAt,
+            Instant ackDeadlineAt
+    ) {
         List<GatewayCommandAttemptRecord> records = findCreatedSubmitAttempts(limit);
         return records.stream()
                 .filter(record -> jdbcTemplate.update(
                         """
                                 UPDATE broker_command_attempt
-                                SET transport_state = 'DISPATCHING',
+                                SET ack_deadline_at = ?,
                                     updated_at = ?
                                 WHERE id = ?
                                   AND transport_state = 'CREATED'
+                                  AND ack_deadline_at IS NULL
                                 """,
+                        ackDeadlineAt,
                         claimedAt,
                         UuidBytes.toBytes(record.id())
                 ) == 1)
@@ -144,37 +151,71 @@ public class GatewayJdbcRepository {
     }
 
     @Transactional(readOnly = true)
-    public List<GatewayCommandAttemptRecord> findStaleDispatchingSubmitAttempts(Instant staleBefore, int limit) {
+    public List<GatewayCommandAttemptRecord> findExpiredSubmitOutcomeAttempts(Instant now, int limit) {
         return jdbcTemplate.query(
                 """
                         SELECT id, source_message_id, order_id, command_type, broker_code, wire_message_id,
                                trace_id, payload_json, created_at
                         FROM broker_command_attempt
                         WHERE command_type = 'SUBMIT'
-                          AND transport_state = 'DISPATCHING'
-                          AND updated_at <= ?
-                        ORDER BY updated_at
+                          AND transport_state IN ('CREATED', 'SENT')
+                          AND ack_deadline_at IS NOT NULL
+                          AND ack_deadline_at <= ?
+                        ORDER BY ack_deadline_at
                         LIMIT ?
                         """,
                 (rs, rowNum) -> toAttempt(rs),
-                staleBefore,
+                now,
                 limit
         );
     }
 
     @Transactional
-    public void markAttemptSent(UUID attemptId, Instant sentAt) {
-        jdbcTemplate.update(
+    public boolean markAttemptSent(UUID attemptId, Instant sentAt, Instant ackDeadlineAt) {
+        return jdbcTemplate.update(
                 """
                         UPDATE broker_command_attempt
                         SET transport_state = 'SENT',
                             sent_at = ?,
+                            ack_deadline_at = ?,
                             updated_at = ?
                         WHERE id = ?
+                          AND transport_state = 'CREATED'
+                          AND ack_deadline_at IS NOT NULL
                         """,
                 sentAt,
+                ackDeadlineAt,
                 sentAt,
                 UuidBytes.toBytes(attemptId)
+        ) == 1;
+    }
+
+    @Transactional(readOnly = true)
+    public boolean attemptStateIs(UUID attemptId, String state) {
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM broker_command_attempt
+                        WHERE id = ?
+                          AND transport_state = ?
+                        """,
+                Integer.class,
+                UuidBytes.toBytes(attemptId),
+                state
+        );
+        return count != null && count == 1;
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Instant> findAttemptAckDeadline(UUID attemptId) {
+        return jdbcTemplate.query(
+                """
+                        SELECT ack_deadline_at
+                        FROM broker_command_attempt
+                        WHERE id = ?
+                        """,
+                ps -> ps.setBytes(1, UuidBytes.toBytes(attemptId)),
+                rs -> rs.next() ? Optional.ofNullable(toInstant(rs.getTimestamp("ack_deadline_at"))) : Optional.empty()
         );
     }
 
@@ -189,6 +230,7 @@ public class GatewayJdbcRepository {
                             completed_at = ?,
                             updated_at = ?
                         WHERE id = ?
+                          AND transport_state = 'CREATED'
                         """,
                 errorCode,
                 truncate(errorMessage),
@@ -228,6 +270,7 @@ public class GatewayJdbcRepository {
                             error_message = ?,
                             updated_at = ?
                         WHERE id = ?
+                          AND transport_state IN ('CREATED', 'SENT')
                         """,
                 errorCode,
                 truncate(errorMessage),

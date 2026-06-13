@@ -69,7 +69,7 @@ class BrokerCommandServiceIntegrationTest extends GatewayMySqlTestContainerSuppo
 
     @Test
     @DisplayName("지원하지 않는 command는 TCP로 보내지 않고 parked_message로 격리한다")
-    void unsupportedCommandIsParkedForM4() {
+    void unsupportedCommandIsParkedWithoutTcpDispatch() {
         UUID orderId = UUID.randomUUID();
         MessageEnvelope<JsonNode> envelope = new MessageEnvelope<>(
                 UUID.randomUUID(),
@@ -84,7 +84,7 @@ class BrokerCommandServiceIntegrationTest extends GatewayMySqlTestContainerSuppo
 
         assertThat(result).isEqualTo(BrokerCommandHandlingResult.PARKED_UNSUPPORTED);
         assertThat(repository.findCreatedSubmitAttempts(10)).noneMatch(attempt -> attempt.orderId().equals(orderId));
-        assertThat(repository.countParkedByErrorCode("UNSUPPORTED_COMMAND_FOR_M4")).isEqualTo(1);
+        assertThat(repository.countParkedByErrorCode("UNSUPPORTED_COMMAND")).isEqualTo(1);
     }
 
     private MessageEnvelope<JsonNode> submitEnvelope(UUID orderId, UUID messageId) {

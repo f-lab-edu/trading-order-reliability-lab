@@ -7,6 +7,7 @@ import com.trading.orderreliability.broker.protocol.BrokerMessageId;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderRequest;
 import com.trading.orderreliability.common.id.UuidV7Generator;
 import com.trading.orderreliability.common.messaging.BrokerCommandPayloads.SubmitOrderCommandPayload;
+import com.trading.orderreliability.gateway.config.GatewayBrokerProperties;
 import com.trading.orderreliability.gateway.persistence.GatewayCommandAttemptRecord;
 import com.trading.orderreliability.gateway.persistence.GatewayJdbcRepository;
 import com.trading.orderreliability.gateway.tcp.BrokerGatewayTcpClient;
@@ -25,18 +26,21 @@ public class BrokerCommandDispatcher {
     private final BrokerGatewayTcpClient tcpClient;
     private final UuidV7Generator uuidGenerator;
     private final ObjectMapper objectMapper;
+    private final GatewayBrokerProperties properties;
     private final Clock clock = Clock.systemUTC();
 
     public BrokerCommandDispatcher(
             GatewayJdbcRepository repository,
             BrokerGatewayTcpClient tcpClient,
             UuidV7Generator uuidGenerator,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            GatewayBrokerProperties properties
     ) {
         this.repository = repository;
         this.tcpClient = tcpClient;
         this.uuidGenerator = uuidGenerator;
         this.objectMapper = objectMapper;
+        this.properties = properties;
     }
 
     public void dispatchSubmit(GatewayCommandAttemptRecord attempt) {
@@ -79,10 +83,18 @@ public class BrokerCommandDispatcher {
                     now
             );
             tcpClient.send(frame);
-            repository.markAttemptSent(attempt.id(), clock.instant());
         } catch (Exception e) {
             repository.markAttemptFailed(attempt.id(), "TCP_SEND_FAILED", e.getMessage(), clock.instant());
             throw e;
+        }
+        Instant sentAt = clock.instant();
+        if (!repository.markAttemptSent(
+                attempt.id(),
+                sentAt,
+                sentAt.plusMillis(properties.getCommandAckTimeoutMs())
+        ) && !repository.attemptStateIs(attempt.id(), "ACKED")) {
+            throw new IllegalStateException("Broker command attempt cannot be marked SENT after TCP send: "
+                    + attempt.id());
         }
     }
 

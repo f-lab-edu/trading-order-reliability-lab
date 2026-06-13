@@ -102,7 +102,7 @@ class OrderStatusSsePublisherIntegrationTest extends MySqlTestContainerSupport {
     @Test
     @DisplayName("broker event 적용 후 commit된 상태 변경은 SSE stream으로 전달된다")
     void brokerEventAfterCommitDeliversOrderStatusChangedEvent() throws Exception {
-        Order order = createOrder("m4-sse-broker-event-order");
+        Order order = createOrder("sse-broker-event-order");
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Future<String> received = executor.submit(this::readOneSseEvent);
         Thread.sleep(300);
@@ -141,7 +141,7 @@ class OrderStatusSsePublisherIntegrationTest extends MySqlTestContainerSupport {
     private Order createOrder(String clientOrderId) {
         return orderApplicationService.createOrder(new PlaceOrderCommand(
                 clientOrderId,
-                new AccountId("ACC-M4-SSE"),
+                new AccountId("ACC-BROKER-SSE"),
                 Market.US,
                 new Symbol("AAPL"),
                 OrderSide.BUY,

@@ -59,7 +59,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     @Test
     @DisplayName("BrokerOrderAcknowledged는 PENDING_ACK 주문을 LIVE로 전환하고 PLACE instruction을 완료한다")
     void acknowledgedMovesPendingAckOrderToLive() {
-        Order order = createOrder("m4-ack-order");
+        Order order = createOrder("broker-ack-order");
 
         BrokerEventApplyResult result = brokerEventApplicationService.apply(ackEnvelope(order.orderId().value(), "dedup-ack-1", "hash-ack-1"));
 
@@ -73,7 +73,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     @Test
     @DisplayName("BrokerOrderRejected는 PENDING_ACK 주문을 REJECTED로 종결한다")
     void rejectedMovesPendingAckOrderToRejected() {
-        Order order = createOrder("m4-reject-order");
+        Order order = createOrder("broker-reject-order");
 
         BrokerEventApplyResult result = brokerEventApplicationService.apply(rejectEnvelope(order.orderId().value(), "dedup-reject-1", "hash-reject-1"));
 
@@ -87,7 +87,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     @Test
     @DisplayName("BrokerOrderPartiallyFilled는 수량 불변식을 유지하며 PARTIALLY_FILLED로 수렴한다")
     void partiallyFilledUpdatesQuantitiesAndStatus() {
-        Order order = createOrder("m4-partial-order");
+        Order order = createOrder("broker-partial-order");
 
         BrokerEventApplyResult result = brokerEventApplicationService.apply(partialEnvelope(order.orderId().value(), "dedup-fill-p-1", "hash-fill-p-1"));
 
@@ -101,7 +101,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     @Test
     @DisplayName("BrokerOrderPartiallyFilled의 cumQty와 leavesQty가 주문 수량과 맞지 않으면 상태를 바꾸지 않는다")
     void inconsistentPartialFillQuantitiesDoNotMutateOrder() {
-        Order order = createOrder("m4-partial-invalid-order");
+        Order order = createOrder("broker-partial-invalid-order");
 
         assertThatThrownBy(() -> brokerEventApplicationService.apply(partialEnvelope(
                 order.orderId().value(),
@@ -121,7 +121,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     @Test
     @DisplayName("BrokerOrderFilled는 주문을 FILLED terminal 상태로 수렴한다")
     void filledMovesOrderToFilledTerminalStatus() {
-        Order order = createOrder("m4-filled-order");
+        Order order = createOrder("broker-filled-order");
 
         BrokerEventApplyResult result = brokerEventApplicationService.apply(filledEnvelope(order.orderId().value(), "dedup-fill-f-1", "hash-fill-f-1"));
 
@@ -136,7 +136,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     @Test
     @DisplayName("동일 brokerEventDedupKey와 동일 payloadHash 재수신은 상태 변경을 건너뛴다")
     void duplicateBrokerEventWithSamePayloadHashIsSkipped() {
-        Order order = createOrder("m4-duplicate-order");
+        Order order = createOrder("broker-duplicate-order");
         MessageEnvelope<JsonNode> envelope = ackEnvelope(order.orderId().value(), "dedup-ack-duplicate", "hash-ack-duplicate");
 
         BrokerEventApplyResult first = brokerEventApplicationService.apply(envelope);
@@ -150,7 +150,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     @Test
     @DisplayName("동일 brokerEventDedupKey와 다른 payloadHash 재수신은 상태 변경 없이 parking한다")
     void brokerEventPayloadHashMismatchIsParked() {
-        Order order = createOrder("m4-mismatch-order");
+        Order order = createOrder("broker-mismatch-order");
         brokerEventApplicationService.apply(ackEnvelope(order.orderId().value(), "dedup-ack-mismatch", "hash-ack-original"));
 
         BrokerEventApplyResult mismatch = brokerEventApplicationService.apply(ackEnvelope(order.orderId().value(), "dedup-ack-mismatch", "hash-ack-different"));
@@ -167,7 +167,7 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     private Order createOrder(String clientOrderId) {
         return orderApplicationService.createOrder(new PlaceOrderCommand(
                 clientOrderId,
-                new AccountId("ACC-M4-BROKER"),
+                new AccountId("ACC-BROKER-EVENT"),
                 Market.US,
                 new Symbol("AAPL"),
                 OrderSide.BUY,

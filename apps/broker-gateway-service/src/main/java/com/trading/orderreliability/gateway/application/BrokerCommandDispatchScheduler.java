@@ -40,10 +40,12 @@ public class BrokerCommandDispatchScheduler {
             initialDelayString = "${gateway.broker.command-dispatch-initial-delay-ms:0}"
     )
     public void dispatchCreatedAttempts() {
-        parkStaleDispatchingAttempts();
+        parkExpiredSubmitOutcomes();
+        Instant now = clock.instant();
         List<GatewayCommandAttemptRecord> attempts = repository.claimCreatedSubmitAttempts(
                 properties.getCommandDispatchBatchSize(),
-                clock.instant()
+                now,
+                now.plusMillis(properties.getCommandAckTimeoutMs())
         );
         for (GatewayCommandAttemptRecord attempt : attempts) {
             try {
@@ -58,22 +60,21 @@ public class BrokerCommandDispatchScheduler {
         }
     }
 
-    private void parkStaleDispatchingAttempts() {
+    private void parkExpiredSubmitOutcomes() {
         Instant now = clock.instant();
-        Instant staleBefore = now.minusMillis(properties.getCommandDispatchLeaseTimeoutMs());
-        List<GatewayCommandAttemptRecord> attempts = repository.findStaleDispatchingSubmitAttempts(
-                staleBefore,
+        List<GatewayCommandAttemptRecord> attempts = repository.findExpiredSubmitOutcomeAttempts(
+                now,
                 properties.getCommandDispatchBatchSize()
         );
         for (GatewayCommandAttemptRecord attempt : attempts) {
-            String message = "Broker command dispatch outcome is unknown in M4; reconciliation is deferred to M7";
-            if (repository.markAttemptUnknown(attempt.id(), "DISPATCH_OUTCOME_UNKNOWN_FOR_M4", message, now)) {
+            String message = "Broker submit command outcome is unknown; reconciliation is deferred to a later recovery flow";
+            if (repository.markAttemptUnknown(attempt.id(), "SUBMIT_OUTCOME_UNKNOWN", message, now)) {
                 repository.parkRawMessage(
                         java.util.UUID.randomUUID(),
                         "broker-command-attempt",
                         "broker-gateway-command-dispatcher",
                         attempt.payloadJson(),
-                        "DISPATCH_OUTCOME_UNKNOWN_FOR_M4",
+                        "SUBMIT_OUTCOME_UNKNOWN",
                         message,
                         now
                 );

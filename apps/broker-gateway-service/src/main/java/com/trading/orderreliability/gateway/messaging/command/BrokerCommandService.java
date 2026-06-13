@@ -62,8 +62,8 @@ public class BrokerCommandService {
                     MessagingTopics.BROKER_COMMAND,
                     CONSUMER_NAME,
                     envelope,
-                    "UNSUPPORTED_COMMAND_FOR_M4",
-                    "Broker Gateway M4 only dispatches SubmitOrderCommand",
+                    "UNSUPPORTED_COMMAND",
+                    "Broker Gateway currently dispatches SubmitOrderCommand only",
                     clock.instant()
             );
             return BrokerCommandHandlingResult.PARKED_UNSUPPORTED;

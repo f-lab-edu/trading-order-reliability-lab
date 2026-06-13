@@ -15,6 +15,7 @@ import com.trading.orderreliability.common.messaging.MessagingTopics;
 import com.trading.orderreliability.gateway.messaging.command.BrokerCommandService;
 import com.trading.orderreliability.gateway.messaging.outbox.GatewayOutboxMessageRecord;
 import com.trading.orderreliability.gateway.messaging.outbox.GatewayOutboxPublisher;
+import com.trading.orderreliability.gateway.persistence.GatewayCommandAttemptRecord;
 import com.trading.orderreliability.gateway.persistence.GatewayJdbcRepository;
 import com.trading.orderreliability.gateway.support.GatewayMySqlTestContainerSupport;
 
@@ -127,7 +128,7 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
         OrderRequest request = BROKER_SERVER.awaitOrderRequest();
         assertThat(request.header().messageId()).isEqualTo(BrokerMessageId.ORDR);
         assertThat(request.header().orderId()).isEqualTo(orderId);
-        assertThat(request.header().traceId()).isEqualTo("trace-gateway-m4-smoke");
+        assertThat(request.header().traceId()).isEqualTo("trace-gateway-dispatch-smoke");
         assertThat(request.side()).isEqualTo("B");
         assertThat(request.orderType()).isEqualTo("L");
 
@@ -139,13 +140,13 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
             embeddedKafkaBroker.consumeFromAnEmbeddedTopic(consumer, MessagingTopics.BROKER_EVENT);
             JsonNode envelope = findEnvelope(consumer, outbox.id());
             assertThat(envelope.path("messageType").asText()).isEqualTo(MessageTypes.BROKER_ORDER_ACKNOWLEDGED);
-            assertThat(envelope.path("traceId").asText()).isEqualTo("trace-gateway-m4-smoke");
+            assertThat(envelope.path("traceId").asText()).isEqualTo("trace-gateway-dispatch-smoke");
             assertThat(envelope.path("payload").path("brokerOrderId").asText()).isEqualTo("BRK-SMOKE-ACK-001");
         }
     }
 
     @Test
-    @DisplayName("stale DISPATCHING attempt는 재전송하지 않고 UNKNOWN과 parking으로 격리한다")
+    @DisplayName("ack deadline이 지난 submit attempt는 재전송하지 않고 UNKNOWN과 parking으로 격리한다")
     @Sql(statements = {
             "DELETE FROM outbox_message",
             "DELETE FROM broker_message_journal",
@@ -154,15 +155,77 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
             "DELETE FROM processed_message",
             "DELETE FROM parked_message"
     })
-    void staleDispatchingAttemptIsParkedAsUnknownWithoutResend() {
+    void expiredSubmitAckDeadlineIsParkedAsUnknownWithoutResend() {
         UUID orderId = UUID.randomUUID();
         commandService.handle(submitEnvelope(orderId));
-        assertThat(repository.claimCreatedSubmitAttempts(10, Instant.parse("2026-06-13T00:00:00Z"))).hasSize(1);
+        assertThat(repository.claimCreatedSubmitAttempts(
+                10,
+                Instant.parse("2026-06-13T00:00:00Z"),
+                Instant.parse("2026-06-13T00:00:01Z")
+        )).hasSize(1);
 
         dispatchScheduler.dispatchCreatedAttempts();
 
         assertThat(repository.countAttemptsByOrderIdAndState(orderId, "UNKNOWN")).isEqualTo(1);
-        assertThat(repository.countParkedByErrorCode("DISPATCH_OUTCOME_UNKNOWN_FOR_M4")).isEqualTo(1);
+        assertThat(repository.countParkedByErrorCode("SUBMIT_OUTCOME_UNKNOWN")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("claim된 CREATED submit attempt는 ack deadline 전까지 dispatch 후보로 다시 조회되지 않는다")
+    @Sql(statements = {
+            "DELETE FROM outbox_message",
+            "DELETE FROM broker_message_journal",
+            "DELETE FROM broker_command_attempt",
+            "DELETE FROM broker_order_binding",
+            "DELETE FROM processed_message",
+            "DELETE FROM parked_message"
+    })
+    void claimedCreatedAttemptIsHiddenFromDispatchUntilAckDeadlineExpires() {
+        UUID orderId = UUID.randomUUID();
+        commandService.handle(submitEnvelope(orderId));
+
+        assertThat(repository.claimCreatedSubmitAttempts(
+                10,
+                Instant.parse("2026-06-13T00:00:00Z"),
+                Instant.parse("2099-01-01T00:00:00Z")
+        )).hasSize(1);
+
+        assertThat(repository.findCreatedSubmitAttempts(10))
+                .noneMatch(attempt -> attempt.orderId().equals(orderId));
+        assertThat(repository.findExpiredSubmitOutcomeAttempts(
+                Instant.parse("2026-06-13T00:00:01Z"),
+                10
+        )).noneMatch(attempt -> attempt.orderId().equals(orderId));
+    }
+
+    @Test
+    @DisplayName("SENT submit attempt는 송신 시각 기준 ack deadline으로 갱신되고 만료 시 UNKNOWN으로 격리된다")
+    @Sql(statements = {
+            "DELETE FROM outbox_message",
+            "DELETE FROM broker_message_journal",
+            "DELETE FROM broker_command_attempt",
+            "DELETE FROM broker_order_binding",
+            "DELETE FROM processed_message",
+            "DELETE FROM parked_message"
+    })
+    void sentAttemptAckDeadlineIsRefreshedFromSentAtAndExpiresAsUnknown() {
+        UUID orderId = UUID.randomUUID();
+        commandService.handle(submitEnvelope(orderId));
+        GatewayCommandAttemptRecord attempt = repository.claimCreatedSubmitAttempts(
+                10,
+                Instant.parse("2026-06-13T00:00:00Z"),
+                Instant.parse("2026-06-13T00:00:01Z")
+        ).getFirst();
+
+        Instant sentAt = Instant.parse("2026-06-13T00:00:10Z");
+        Instant ackDeadlineAt = sentAt.plusSeconds(30);
+        assertThat(repository.markAttemptSent(attempt.id(), sentAt, ackDeadlineAt)).isTrue();
+        assertThat(repository.findAttemptAckDeadline(attempt.id())).contains(ackDeadlineAt);
+
+        dispatchScheduler.dispatchCreatedAttempts();
+
+        assertThat(repository.countAttemptsByOrderIdAndState(orderId, "UNKNOWN")).isEqualTo(1);
+        assertThat(repository.countParkedByErrorCode("SUBMIT_OUTCOME_UNKNOWN")).isEqualTo(1);
     }
 
     private void awaitCreatedAttempt(UUID orderId) throws InterruptedException {
@@ -192,7 +255,7 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
     }
 
     private Consumer<String, String> createConsumer() {
-        Map<String, Object> props = KafkaTestUtils.consumerProps(embeddedKafkaBroker, "m4-gateway-smoke-test", false);
+        Map<String, Object> props = KafkaTestUtils.consumerProps(embeddedKafkaBroker, "gateway-command-dispatch-test", false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
@@ -219,7 +282,7 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
                 MessageTypes.SUBMIT_ORDER_COMMAND,
                 orderId.toString(),
                 Instant.parse("2026-06-13T01:00:00Z"),
-                "trace-gateway-m4-smoke",
+                "trace-gateway-dispatch-smoke",
                 objectMapper.valueToTree(new SubmitOrderCommandPayload(
                         orderId,
                         "ACC-GW-SMOKE",
@@ -246,7 +309,7 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
 
         private FakeBrokerServer(ServerSocket serverSocket) {
             this.serverSocket = serverSocket;
-            this.thread = new Thread(this::run, "m4-fake-broker-server");
+            this.thread = new Thread(this::run, "gateway-command-dispatch-fake-broker-server");
             this.thread.setDaemon(true);
         }
 
