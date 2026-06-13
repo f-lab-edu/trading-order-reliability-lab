@@ -24,6 +24,7 @@ import org.springframework.web.context.WebApplicationContext;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@DisplayName("주문 컨트롤러 신뢰성 회귀")
 class OrderControllerReliabilityRegressionTest extends MySqlTestContainerSupport {
 
     @Autowired

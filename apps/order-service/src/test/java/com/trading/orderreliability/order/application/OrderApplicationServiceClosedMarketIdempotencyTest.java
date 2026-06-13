@@ -29,6 +29,7 @@ import com.trading.orderreliability.order.support.MySqlTestContainerSupport;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -36,6 +37,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest(properties = "order-service.market-state=CLOSED")
 @ActiveProfiles("test")
+@DisplayName("닫힌 시장에서의 주문 생성 멱등성")
 class OrderApplicationServiceClosedMarketIdempotencyTest extends MySqlTestContainerSupport {
 
     @Autowired
@@ -54,6 +56,7 @@ class OrderApplicationServiceClosedMarketIdempotencyTest extends MySqlTestContai
     private UuidV7Generator uuidGenerator;
 
     @Test
+    @DisplayName("이미 생성된 주문의 동일 payload 재시도는 시장이 닫혀도 기존 주문을 반환한다")
     void 이미_생성된_주문의_동일_payload_재시도는_시장이_닫혀도_기존_주문을_반환한다() {
         PlaceOrderCommand command = placeCommand("client-order-closed-market-retry-001", "MSFT");
         Order existingOrder = seedExistingPlaceInstruction(command);
@@ -65,6 +68,7 @@ class OrderApplicationServiceClosedMarketIdempotencyTest extends MySqlTestContai
     }
 
     @Test
+    @DisplayName("이미 생성된 주문의 다른 payload 재시도는 시장이 닫혀도 멱등성 충돌로 처리한다")
     void 이미_생성된_주문의_다른_payload_재시도는_시장이_닫혀도_멱등성_충돌로_처리한다() {
         seedExistingPlaceInstruction(placeCommand("client-order-closed-market-retry-002", "AAPL"));
 

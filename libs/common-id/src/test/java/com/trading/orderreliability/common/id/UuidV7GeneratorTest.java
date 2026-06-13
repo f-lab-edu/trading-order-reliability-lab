@@ -12,6 +12,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+@DisplayName("UUID v7 생성기")
 class UuidV7GeneratorTest {
 
     @Test

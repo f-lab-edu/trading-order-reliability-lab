@@ -8,6 +8,7 @@ import com.trading.orderreliability.order.support.MySqlTestContainerSupport;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,12 +18,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@DisplayName("message parking lot 통합 흐름")
 class MessageParkingLotIntegrationTest extends MySqlTestContainerSupport {
 
     @Autowired
     private MessageParkingLot messageParkingLot;
 
     @Test
+    @DisplayName("parse failure는 messageId 없이 parking 된다")
     void parseFailureIsParkedWithoutMessageId() {
         UUID parkedId = messageParkingLot.parkParseFailure(
                 MessagingTopics.BROKER_EVENT,
@@ -44,6 +47,7 @@ class MessageParkingLotIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("parse failure의 null payload와 null error message는 기본값으로 정규화된다")
     void parseFailureNormalizesNullPayloadAndNullErrorMessage() {
         UUID parkedId = messageParkingLot.parkParseFailure(
                 MessagingTopics.BROKER_EVENT,
@@ -60,6 +64,7 @@ class MessageParkingLotIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("parse failure의 긴 error message는 DB 컬럼 길이로 잘린다")
     void parseFailureTruncatesLongErrorMessageToColumnLength() {
         String longErrorMessage = "x".repeat(600);
 
@@ -78,6 +83,7 @@ class MessageParkingLotIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("반복 실패는 envelope 식별자와 함께 parking 된다")
     void repeatedFailureIsParkedWithEnvelopeIdentity() {
         UUID messageId = UUID.randomUUID();
         MessageEnvelope<String> envelope = new MessageEnvelope<>(
@@ -112,6 +118,7 @@ class MessageParkingLotIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("반복 실패의 null error message는 errorCode로 정규화된다")
     void repeatedFailureNormalizesNullErrorMessageToErrorCode() {
         UUID messageId = UUID.randomUUID();
         MessageEnvelope<String> envelope = new MessageEnvelope<>(
@@ -139,6 +146,7 @@ class MessageParkingLotIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("알려진 envelope도 감사 이력을 위해 여러 번 parking 할 수 있다")
     void knownEnvelopeCanBeParkedMoreThanOnceForAuditHistory() {
         UUID messageId = UUID.randomUUID();
         MessageEnvelope<String> envelope = new MessageEnvelope<>(

@@ -31,6 +31,7 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 @ActiveProfiles("test")
 @EmbeddedKafka(partitions = 1, topics = MessagingTopics.BROKER_COMMAND, bootstrapServersProperty = "spring.kafka.bootstrap-servers")
+@DisplayName("outbox publisher 통합 흐름")
 class OutboxPublisherIntegrationTest extends MySqlTestContainerSupport {
 
     @Autowired
@@ -66,6 +68,7 @@ class OutboxPublisherIntegrationTest extends MySqlTestContainerSupport {
     private EmbeddedKafkaBroker embeddedKafkaBroker;
 
     @Test
+    @DisplayName("publisher는 envelope를 Kafka로 발행하고 outbox를 SENT로 표시한다")
     void publisherSendsEnvelopeToKafkaAndMarksOutboxSent() throws Exception {
         PlaceOrderResult result = orderApplicationService.createOrder(placeCommand("m2-publisher-order-001", "trace-m2-publisher-001"));
 
@@ -88,6 +91,7 @@ class OutboxPublisherIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("publisher 실패는 outbox를 FAILED로 표시하고 retry metadata를 기록한다")
     void publisherFailureMarksOutboxFailedWithRetryMetadata() {
         PlaceOrderResult result = orderApplicationService.createOrder(placeCommand("m2-publisher-order-002", "trace-m2-publisher-002"));
         OutboxPublisherProperties properties = new OutboxPublisherProperties();
@@ -114,6 +118,7 @@ class OutboxPublisherIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("최대 재시도 횟수에 도달한 FAILED outbox는 더 이상 발행 대상이 아니다")
     void failedOutboxMessageStopsBeingPublishableWhenMaxRetryCountIsReached() {
         PlaceOrderResult result = orderApplicationService.createOrder(placeCommand("m2-publisher-order-003", "trace-m2-publisher-003"));
         OutboxPublisherProperties properties = new OutboxPublisherProperties();
@@ -141,6 +146,7 @@ class OutboxPublisherIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("다른 publisher의 늦은 실패 처리는 이미 SENT인 outbox 상태를 덮어쓰지 않는다")
     void lateFailureFromAnotherPublisherDoesNotOverwriteSentStatus() {
         PlaceOrderResult result = orderApplicationService.createOrder(placeCommand("m2-publisher-order-004", "trace-m2-publisher-004"));
         Instant now = Instant.now();

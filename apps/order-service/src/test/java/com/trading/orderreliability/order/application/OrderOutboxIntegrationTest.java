@@ -23,6 +23,7 @@ import com.trading.orderreliability.order.support.MySqlTestContainerSupport;
 import java.math.BigDecimal;
 import java.util.List;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@DisplayName("주문 outbox 통합 흐름")
 class OrderOutboxIntegrationTest extends MySqlTestContainerSupport {
 
     @Autowired
@@ -44,6 +46,7 @@ class OrderOutboxIntegrationTest extends MySqlTestContainerSupport {
     private ObjectMapper objectMapper;
 
     @Test
+    @DisplayName("주문 생성은 같은 트랜잭션에서 SubmitOrderCommand outbox 메시지를 저장한다")
     void createOrderStoresSubmitOrderCommandOutboxInSameTransaction() throws Exception {
         PlaceOrderCommand command = placeCommand("m2-client-order-001", "AAPL", "trace-m2-submit-001");
 
@@ -70,6 +73,7 @@ class OrderOutboxIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("멱등 주문 생성 재시도는 SubmitOrderCommand outbox 메시지를 추가로 만들지 않는다")
     void idempotentCreateOrderRetryDoesNotCreateAnotherOutboxMessage() {
         PlaceOrderCommand command = placeCommand("m2-client-order-002", "MSFT", "trace-m2-submit-002");
 
@@ -84,6 +88,7 @@ class OrderOutboxIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("주문 취소 요청은 CancelOrderCommand outbox 메시지를 저장한다")
     void cancelOrderStoresCancelOrderCommandOutbox() {
         Order order = orderApplicationService.createOrder(placeCommand("m2-client-order-003", "TSLA", "trace-m2-submit-003")).order();
 

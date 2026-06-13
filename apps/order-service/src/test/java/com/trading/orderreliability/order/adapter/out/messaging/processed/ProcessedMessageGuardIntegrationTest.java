@@ -15,6 +15,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -25,12 +26,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@DisplayName("processed message guard 통합 흐름")
 class ProcessedMessageGuardIntegrationTest extends MySqlTestContainerSupport {
 
     @Autowired
     private ProcessedMessageGuard processedMessageGuard;
 
     @Test
+    @DisplayName("중복 envelope는 business handler를 한 번만 실행한다")
     void duplicateEnvelopeRunsHandlerOnlyOnce() {
         AtomicInteger handledCount = new AtomicInteger();
         MessageEnvelope<String> envelope = envelope(UUID.randomUUID(), "order-processed-001");
@@ -52,6 +55,7 @@ class ProcessedMessageGuardIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("handler 실패 시 processed row를 rollback하여 메시지를 재시도할 수 있다")
     void handlerFailureRollsBackProcessedRowSoMessageCanBeRetried() {
         AtomicInteger handledCount = new AtomicInteger();
         MessageEnvelope<String> envelope = envelope(UUID.randomUUID(), "order-processed-002");
@@ -76,6 +80,7 @@ class ProcessedMessageGuardIntegrationTest extends MySqlTestContainerSupport {
     }
 
     @Test
+    @DisplayName("동시 중복 envelope도 business handler를 한 번만 실행한다")
     void concurrentDuplicateEnvelopeRunsHandlerOnlyOnce() throws Exception {
         AtomicInteger handledCount = new AtomicInteger();
         MessageEnvelope<String> envelope = envelope(UUID.randomUUID(), "order-processed-concurrent");

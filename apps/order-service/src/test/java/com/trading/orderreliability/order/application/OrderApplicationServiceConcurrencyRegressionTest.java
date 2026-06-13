@@ -35,6 +35,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -45,6 +46,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@DisplayName("주문 애플리케이션 서비스 동시성 회귀")
 class OrderApplicationServiceConcurrencyRegressionTest extends MySqlTestContainerSupport {
 
     private static final String ACCOUNT_ID = "ACC-CONCURRENT-001";
@@ -56,6 +58,7 @@ class OrderApplicationServiceConcurrencyRegressionTest extends MySqlTestContaine
     private OrderApplicationService orderApplicationService;
 
     @Test
+    @DisplayName("동일한 주문 생성 요청이 동시에 들어와도 하나의 주문으로 멱등하게 수렴한다")
     void 동일한_주문_생성_요청이_동시에_들어와도_하나의_주문으로_멱등하게_수렴한다() throws Exception {
         // given: 테스트 전용 repository가 두 요청 모두 기존 PLACE instruction이 없다고 읽은 뒤에만
         // createOrder 흐름을 계속 진행시킨다. 즉, 실제 운영에서 발생할 수 있는 동시 재시도 race를 고정한다.
@@ -83,6 +86,7 @@ class OrderApplicationServiceConcurrencyRegressionTest extends MySqlTestContaine
     }
 
     @Test
+    @DisplayName("같은 계좌의 동일한 취소 멱등키가 서로 다른 주문에 동시에 사용되면 도메인 충돌로 수렴한다")
     void 같은_계좌의_동일한_취소_멱등키가_서로_다른_주문에_동시에_사용되면_도메인_충돌로_수렴한다() throws Exception {
         // given: 같은 계좌의 서로 다른 주문 두 건을 준비한다.
         Order firstOrder = orderApplicationService.createOrder(placeCommand(
