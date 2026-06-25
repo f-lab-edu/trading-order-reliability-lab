@@ -89,6 +89,23 @@ public class OrderInstructionRepository {
         );
     }
 
+    public int resolveRequestedCancelInstruction(
+            OrderId orderId,
+            OrderInstructionStatus status,
+            String resultCode,
+            String resultMessage,
+            java.time.Instant resolvedAt
+    ) {
+        return jpaRepository.resolveRequestedCancelInstruction(
+                UuidBytes.toBytes(orderId.value()),
+                status.name(),
+                resultCode,
+                resultMessage,
+                resolvedAt,
+                resolvedAt
+        );
+    }
+
     private OrderInstruction toDomain(OrderInstructionEntity entity) {
         return new OrderInstruction(
                 new OrderInstructionId(entity.getId()),

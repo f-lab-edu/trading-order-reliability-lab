@@ -72,4 +72,25 @@ public interface JpaOrderInstructionRepository extends JpaRepository<OrderInstru
             @Param("updatedAt") Instant updatedAt,
             @Param("resolvedAt") Instant resolvedAt
     );
+
+    @Modifying
+    @Query(value = """
+            UPDATE order_instruction
+            SET status = :status,
+                result_code = :resultCode,
+                result_message = :resultMessage,
+                updated_at = :updatedAt,
+                resolved_at = :resolvedAt
+            WHERE order_id = :orderId
+              AND instruction_type = 'CANCEL'
+              AND status = 'REQUESTED'
+            """, nativeQuery = true)
+    int resolveRequestedCancelInstruction(
+            @Param("orderId") byte[] orderId,
+            @Param("status") String status,
+            @Param("resultCode") String resultCode,
+            @Param("resultMessage") String resultMessage,
+            @Param("updatedAt") Instant updatedAt,
+            @Param("resolvedAt") Instant resolvedAt
+    );
 }

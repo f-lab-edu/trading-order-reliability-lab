@@ -2,6 +2,8 @@ package com.trading.orderreliability.order.application.broker;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerCancelAcknowledgedPayload;
+import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerCancelRejectedPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderAcknowledgedPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderFilledPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderPartiallyFilledPayload;
@@ -9,6 +11,7 @@ import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerO
 import com.trading.orderreliability.common.messaging.MessageEnvelope;
 import com.trading.orderreliability.common.messaging.MessageTypes;
 import com.trading.orderreliability.order.application.OrderApplicationService;
+import com.trading.orderreliability.order.application.command.CancelOrderCommand;
 import com.trading.orderreliability.order.application.command.PlaceOrderCommand;
 import com.trading.orderreliability.order.domain.model.AccountId;
 import com.trading.orderreliability.order.domain.model.Market;
@@ -164,6 +167,149 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
         assertThat(parkedCount).isGreaterThanOrEqualTo(1);
     }
 
+    @Test
+    @DisplayName("BrokerCancelAcknowledged는 PENDING_CANCEL 주문을 CANCELED로 종결하고 CANCEL instruction을 완료한다")
+    void cancelAcknowledgedMovesPendingCancelOrderToCanceled() {
+        Order order = createLiveOrder("broker-cancel-ack-order");
+        orderApplicationService.cancelOrder(
+                order.orderId().value(),
+                new CancelOrderCommand(order.accountId(), "cancel-ack-001", "trace-cancel-ack-001")
+        );
+
+        BrokerEventApplyResult result = brokerEventApplicationService.apply(cancelAckEnvelope(
+                order.orderId().value(),
+                "dedup-cancel-ack-1",
+                "hash-cancel-ack-1"
+        ));
+
+        Order persisted = orderApplicationService.getOrder(order.orderId().value());
+        assertThat(result).isEqualTo(BrokerEventApplyResult.APPLIED);
+        assertThat(persisted.status()).isEqualTo(OrderStatus.CANCELED);
+        assertThat(persisted.leavesQty().value()).isZero();
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("COMPLETED");
+        assertThat(orderEventCount(order.orderId().value(), "BrokerCancelAcknowledgedApplied")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("BrokerCancelRejected는 PENDING_CANCEL 주문을 LIVE로 되돌리고 CANCEL instruction을 거절한다")
+    void cancelRejectedMovesPendingCancelOrderBackToLive() {
+        Order order = createLiveOrder("broker-cancel-reject-order");
+        orderApplicationService.cancelOrder(
+                order.orderId().value(),
+                new CancelOrderCommand(order.accountId(), "cancel-reject-001", "trace-cancel-reject-001")
+        );
+
+        BrokerEventApplyResult result = brokerEventApplicationService.apply(cancelRejectEnvelope(
+                order.orderId().value(),
+                "dedup-cancel-reject-1",
+                "hash-cancel-reject-1"
+        ));
+
+        Order persisted = orderApplicationService.getOrder(order.orderId().value());
+        assertThat(result).isEqualTo(BrokerEventApplyResult.APPLIED);
+        assertThat(persisted.status()).isEqualTo(OrderStatus.LIVE);
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("REJECTED");
+        assertThat(orderEventCount(order.orderId().value(), "BrokerCancelRejectedApplied")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("PENDING_ACK 취소 후 BrokerOrderAcknowledged가 도착하면 주문은 PENDING_CANCEL을 유지하고 PLACE만 완료한다")
+    void acknowledgedAfterPendingAckCancelKeepsPendingCancelIntent() {
+        Order order = createOrder("broker-pending-cancel-ack-order");
+        orderApplicationService.cancelOrder(
+                order.orderId().value(),
+                new CancelOrderCommand(order.accountId(), "cancel-before-ack-001", "trace-cancel-before-ack-001")
+        );
+
+        BrokerEventApplyResult result = brokerEventApplicationService.apply(ackEnvelope(
+                order.orderId().value(),
+                "dedup-ack-after-cancel",
+                "hash-ack-after-cancel"
+        ));
+
+        Order persisted = orderApplicationService.getOrder(order.orderId().value());
+        assertThat(result).isEqualTo(BrokerEventApplyResult.APPLIED);
+        assertThat(persisted.status()).isEqualTo(OrderStatus.PENDING_CANCEL);
+        assertThat(instructionStatus(order.orderId().value(), "PLACE")).isEqualTo("COMPLETED");
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("REQUESTED");
+    }
+
+    @Test
+    @DisplayName("PENDING_ACK 취소 후 BrokerOrderRejected가 도착하면 주문은 REJECTED가 되고 CANCEL instruction은 NOT_APPLIED가 된다")
+    void rejectedAfterPendingAckCancelMarksCancelNotApplied() {
+        Order order = createOrder("broker-pending-cancel-reject-order");
+        orderApplicationService.cancelOrder(
+                order.orderId().value(),
+                new CancelOrderCommand(order.accountId(), "cancel-before-reject-001", "trace-cancel-before-reject-001")
+        );
+
+        BrokerEventApplyResult result = brokerEventApplicationService.apply(rejectEnvelope(
+                order.orderId().value(),
+                "dedup-reject-after-cancel",
+                "hash-reject-after-cancel"
+        ));
+
+        Order persisted = orderApplicationService.getOrder(order.orderId().value());
+        assertThat(result).isEqualTo(BrokerEventApplyResult.APPLIED);
+        assertThat(persisted.status()).isEqualTo(OrderStatus.REJECTED);
+        assertThat(instructionStatus(order.orderId().value(), "PLACE")).isEqualTo("REJECTED");
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("NOT_APPLIED");
+    }
+
+    @Test
+    @DisplayName("FILLED 종결 후 늦은 BrokerCancelAcknowledged는 주문 상태를 유지하고 CANCEL instruction을 NOT_APPLIED로 정리한다")
+    void lateCancelAcknowledgedAfterFilledMarksCancelNotApplied() {
+        Order order = createLiveOrder("broker-late-cancel-ack-after-fill-order");
+        orderApplicationService.cancelOrder(
+                order.orderId().value(),
+                new CancelOrderCommand(order.accountId(), "cancel-late-ack-after-fill-001", "trace-cancel-late-ack-after-fill-001")
+        );
+        brokerEventApplicationService.apply(filledEnvelope(
+                order.orderId().value(),
+                "dedup-fill-before-late-cancel-ack",
+                "hash-fill-before-late-cancel-ack"
+        ));
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("NOT_APPLIED");
+
+        BrokerEventApplyResult result = brokerEventApplicationService.apply(cancelAckEnvelope(
+                order.orderId().value(),
+                "dedup-late-cancel-ack-after-fill",
+                "hash-late-cancel-ack-after-fill"
+        ));
+
+        Order persisted = orderApplicationService.getOrder(order.orderId().value());
+        assertThat(result).isEqualTo(BrokerEventApplyResult.APPLIED);
+        assertThat(persisted.status()).isEqualTo(OrderStatus.FILLED);
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("NOT_APPLIED");
+    }
+
+    @Test
+    @DisplayName("FILLED 종결 후 늦은 BrokerCancelRejected는 주문 상태를 유지하고 CANCEL instruction을 NOT_APPLIED로 정리한다")
+    void lateCancelRejectedAfterFilledMarksCancelNotApplied() {
+        Order order = createLiveOrder("broker-late-cancel-reject-after-fill-order");
+        orderApplicationService.cancelOrder(
+                order.orderId().value(),
+                new CancelOrderCommand(order.accountId(), "cancel-late-reject-after-fill-001", "trace-cancel-late-reject-after-fill-001")
+        );
+        brokerEventApplicationService.apply(filledEnvelope(
+                order.orderId().value(),
+                "dedup-fill-before-late-cancel-reject",
+                "hash-fill-before-late-cancel-reject"
+        ));
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("NOT_APPLIED");
+
+        BrokerEventApplyResult result = brokerEventApplicationService.apply(cancelRejectEnvelope(
+                order.orderId().value(),
+                "dedup-late-cancel-reject-after-fill",
+                "hash-late-cancel-reject-after-fill"
+        ));
+
+        Order persisted = orderApplicationService.getOrder(order.orderId().value());
+        assertThat(result).isEqualTo(BrokerEventApplyResult.APPLIED);
+        assertThat(persisted.status()).isEqualTo(OrderStatus.FILLED);
+        assertThat(instructionStatus(order.orderId().value(), "CANCEL")).isEqualTo("NOT_APPLIED");
+    }
+
     private Order createOrder(String clientOrderId) {
         return orderApplicationService.createOrder(new PlaceOrderCommand(
                 clientOrderId,
@@ -177,6 +323,16 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
                 new OrderPrice(new BigDecimal("189.50")),
                 "trace-" + clientOrderId
         )).order();
+    }
+
+    private Order createLiveOrder(String clientOrderId) {
+        Order order = createOrder(clientOrderId);
+        brokerEventApplicationService.apply(ackEnvelope(
+                order.orderId().value(),
+                "dedup-live-" + clientOrderId,
+                "hash-live-" + clientOrderId
+        ));
+        return orderApplicationService.getOrder(order.orderId().value());
     }
 
     private MessageEnvelope<JsonNode> ackEnvelope(UUID orderId, String dedupKey, String payloadHash) {
@@ -255,6 +411,36 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
         );
     }
 
+    private MessageEnvelope<JsonNode> cancelAckEnvelope(UUID orderId, String dedupKey, String payloadHash) {
+        return envelope(
+                MessageTypes.BROKER_CANCEL_ACKNOWLEDGED,
+                orderId,
+                new BrokerCancelAcknowledgedPayload(
+                        orderId,
+                        dedupKey,
+                        payloadHash,
+                        "BRK-" + orderId.toString().substring(0, 8),
+                        Instant.parse("2026-06-13T01:04:00Z")
+                )
+        );
+    }
+
+    private MessageEnvelope<JsonNode> cancelRejectEnvelope(UUID orderId, String dedupKey, String payloadHash) {
+        return envelope(
+                MessageTypes.BROKER_CANCEL_REJECTED,
+                orderId,
+                new BrokerCancelRejectedPayload(
+                        orderId,
+                        dedupKey,
+                        payloadHash,
+                        "BRK-" + orderId.toString().substring(0, 8),
+                        "TOO_LATE_CANCEL",
+                        "too late to cancel",
+                        Instant.parse("2026-06-13T01:05:00Z")
+                )
+        );
+    }
+
     private MessageEnvelope<JsonNode> envelope(String messageType, UUID orderId, Object payload) {
         return new MessageEnvelope<>(
                 UUID.randomUUID(),
@@ -267,10 +453,15 @@ class BrokerEventApplicationServiceIntegrationTest extends MySqlTestContainerSup
     }
 
     private String instructionStatus(UUID orderId) {
+        return instructionStatus(orderId, "PLACE");
+    }
+
+    private String instructionStatus(UUID orderId, String instructionType) {
         return jdbcTemplate.queryForObject(
-                "SELECT status FROM order_instruction WHERE order_id = ? AND instruction_type = 'PLACE'",
+                "SELECT status FROM order_instruction WHERE order_id = ? AND instruction_type = ?",
                 String.class,
-                com.trading.orderreliability.common.id.UuidBytes.toBytes(orderId)
+                com.trading.orderreliability.common.id.UuidBytes.toBytes(orderId),
+                instructionType
         );
     }
 

@@ -11,6 +11,7 @@ public record GatewayCommandAttemptRecord(
         String brokerCode,
         String wireMessageId,
         String traceId,
+        String brokerOrderId,
         String payloadJson,
         Instant createdAt
 ) {

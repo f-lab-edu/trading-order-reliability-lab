@@ -108,12 +108,44 @@ public class GatewayJdbcRepository {
         );
     }
 
+    @Transactional
+    public void insertCancelAttempt(
+            UUID attemptId,
+            UUID sourceMessageId,
+            UUID orderId,
+            String brokerCode,
+            String wireMessageId,
+            String traceId,
+            Object payload,
+            Instant createdAt
+    ) {
+        jdbcTemplate.update(
+                """
+                        INSERT INTO broker_command_attempt (
+                            id, source_message_id, order_id, command_type, broker_code, wire_message_id,
+                            trace_id, broker_order_id, payload_json, transport_state, sent_at, ack_deadline_at,
+                            completed_at, error_code, error_message, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, 'CANCEL', ?, ?, ?, NULL, ?, 'CREATED', NULL, NULL, NULL, NULL, NULL, ?, ?)
+                        """,
+                UuidBytes.toBytes(attemptId),
+                UuidBytes.toBytes(sourceMessageId),
+                UuidBytes.toBytes(orderId),
+                brokerCode,
+                wireMessageId,
+                traceId,
+                writeJson(payload),
+                createdAt,
+                createdAt
+        );
+    }
+
     @Transactional(readOnly = true)
     public List<GatewayCommandAttemptRecord> findCreatedSubmitAttempts(int limit) {
         return jdbcTemplate.query(
                 """
                         SELECT id, source_message_id, order_id, command_type, broker_code, wire_message_id,
-                               trace_id, payload_json, created_at
+                               trace_id, broker_order_id, payload_json, created_at
                         FROM broker_command_attempt
                         WHERE command_type = 'SUBMIT'
                           AND transport_state = 'CREATED'
@@ -122,6 +154,43 @@ public class GatewayJdbcRepository {
                         LIMIT ?
                         """,
                 (rs, rowNum) -> toAttempt(rs),
+                limit
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public List<GatewayCommandAttemptRecord> findDispatchableCancelAttempts(int limit) {
+        return findDispatchableCancelAttempts(Instant.now(), limit);
+    }
+
+    @Transactional(readOnly = true)
+    public List<GatewayCommandAttemptRecord> findDispatchableCancelAttempts(Instant now, int limit) {
+        return jdbcTemplate.query(
+                """
+                        SELECT a.id, a.source_message_id, a.order_id, a.command_type, a.broker_code, a.wire_message_id,
+                               a.trace_id, b.broker_order_id, a.payload_json, a.created_at
+                        FROM broker_command_attempt a
+                        JOIN broker_order_binding b
+                          ON b.order_id = a.order_id
+                         AND b.broker_code = a.broker_code
+                        WHERE a.command_type = 'CANCEL'
+                          AND a.transport_state = 'CREATED'
+                          AND (a.ack_deadline_at IS NULL OR a.ack_deadline_at <= ?)
+                          AND b.broker_order_id IS NOT NULL
+                          AND b.accepted_at IS NOT NULL
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM broker_message_journal j
+                              WHERE j.broker_code = a.broker_code
+                                AND j.wire_message_id = a.wire_message_id
+                                AND j.direction = 'OUT'
+                                AND j.msg_id = 'CXLQ'
+                          )
+                        ORDER BY a.created_at
+                        LIMIT ?
+                        """,
+                (rs, rowNum) -> toAttempt(rs),
+                now,
                 limit
         );
     }
@@ -150,12 +219,40 @@ public class GatewayJdbcRepository {
                 .toList();
     }
 
+    @Transactional
+    public List<GatewayCommandAttemptRecord> claimDispatchableCancelAttempts(
+            int limit,
+            Instant claimedAt,
+            Instant ackDeadlineAt
+    ) {
+        List<GatewayCommandAttemptRecord> records = findDispatchableCancelAttempts(claimedAt, limit);
+        return records.stream()
+                .filter(record -> jdbcTemplate.update(
+                        """
+                                UPDATE broker_command_attempt
+                                SET ack_deadline_at = ?,
+                                    broker_order_id = ?,
+                                    updated_at = ?
+                                WHERE id = ?
+                                  AND command_type = 'CANCEL'
+                                  AND transport_state = 'CREATED'
+                                  AND (ack_deadline_at IS NULL OR ack_deadline_at <= ?)
+                                """,
+                        ackDeadlineAt,
+                        record.brokerOrderId(),
+                        claimedAt,
+                        UuidBytes.toBytes(record.id()),
+                        claimedAt
+                ) == 1)
+                .toList();
+    }
+
     @Transactional(readOnly = true)
     public List<GatewayCommandAttemptRecord> findExpiredSubmitOutcomeAttempts(Instant now, int limit) {
         return jdbcTemplate.query(
                 """
                         SELECT id, source_message_id, order_id, command_type, broker_code, wire_message_id,
-                               trace_id, payload_json, created_at
+                               trace_id, broker_order_id, payload_json, created_at
                         FROM broker_command_attempt
                         WHERE command_type = 'SUBMIT'
                           AND transport_state IN ('CREATED', 'SENT')
@@ -251,6 +348,7 @@ public class GatewayJdbcRepository {
                             updated_at = ?
                         WHERE broker_code = ?
                           AND wire_message_id = ?
+                          AND transport_state IN ('CREATED', 'SENT')
                         """,
                 blankToNull(brokerOrderId),
                 completedAt,
@@ -258,6 +356,36 @@ public class GatewayJdbcRepository {
                 brokerCode,
                 wireMessageId
         ) == 1;
+    }
+
+    @Transactional
+    public int markCreatedCancelAttemptsFailed(
+            UUID orderId,
+            String brokerCode,
+            String errorCode,
+            String errorMessage,
+            Instant failedAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                        UPDATE broker_command_attempt
+                        SET transport_state = 'FAILED',
+                            error_code = ?,
+                            error_message = ?,
+                            completed_at = ?,
+                            updated_at = ?
+                        WHERE order_id = ?
+                          AND broker_code = ?
+                          AND command_type = 'CANCEL'
+                          AND transport_state = 'CREATED'
+                        """,
+                errorCode,
+                truncate(errorMessage),
+                failedAt,
+                failedAt,
+                UuidBytes.toBytes(orderId),
+                brokerCode
+        );
     }
 
     @Transactional
@@ -284,16 +412,70 @@ public class GatewayJdbcRepository {
         return jdbcTemplate.update(
                 """
                         UPDATE broker_order_binding
-                        SET broker_order_id = ?,
-                            accepted_at = ?
+                        SET broker_order_id = CASE
+                                WHEN broker_order_id IS NULL THEN ?
+                                ELSE broker_order_id
+                            END,
+                            accepted_at = CASE
+                                WHEN accepted_at IS NULL THEN ?
+                                ELSE accepted_at
+                            END
                         WHERE order_id = ?
                           AND broker_code = ?
+                          AND (broker_order_id IS NULL OR broker_order_id = ?)
                         """,
                 brokerOrderId,
                 acceptedAt,
                 UuidBytes.toBytes(orderId),
-                brokerCode
+                brokerCode,
+                brokerOrderId
         ) == 1;
+    }
+
+    @Transactional
+    public boolean acceptSubmitAcknowledgement(
+            UUID orderId,
+            String brokerCode,
+            String wireMessageId,
+            String brokerOrderId,
+            Instant acceptedAt,
+            Instant completedAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                        UPDATE broker_order_binding b
+                        JOIN broker_command_attempt a
+                          ON a.order_id = b.order_id
+                         AND a.broker_code = b.broker_code
+                        SET b.broker_order_id = CASE
+                                WHEN b.broker_order_id IS NULL THEN ?
+                                ELSE b.broker_order_id
+                            END,
+                            b.accepted_at = CASE
+                                WHEN b.accepted_at IS NULL THEN ?
+                                ELSE b.accepted_at
+                            END,
+                            a.transport_state = 'ACKED',
+                            a.broker_order_id = ?,
+                            a.completed_at = ?,
+                            a.updated_at = ?
+                        WHERE b.order_id = ?
+                          AND b.broker_code = ?
+                          AND a.wire_message_id = ?
+                          AND a.command_type = 'SUBMIT'
+                          AND a.transport_state IN ('CREATED', 'SENT')
+                          AND (b.broker_order_id IS NULL OR b.broker_order_id = ?)
+                        """,
+                brokerOrderId,
+                acceptedAt,
+                brokerOrderId,
+                completedAt,
+                completedAt,
+                UuidBytes.toBytes(orderId),
+                brokerCode,
+                wireMessageId,
+                brokerOrderId
+        ) > 0;
     }
 
     @Transactional(readOnly = true)
@@ -313,6 +495,81 @@ public class GatewayJdbcRepository {
                 UuidBytes.toBytes(orderId)
         );
         return count != null && count > 0;
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<String> findSubmitAttemptResponseState(String brokerCode, String wireMessageId, UUID orderId) {
+        return jdbcTemplate.query(
+                """
+                        SELECT CASE
+                            WHEN transport_state = 'ACKED' THEN 'ACKED'
+                            WHEN transport_state IN ('CREATED', 'SENT') THEN 'ELIGIBLE'
+                            ELSE 'INELIGIBLE'
+                        END AS response_state
+                        FROM broker_command_attempt
+                        WHERE broker_code = ?
+                          AND wire_message_id = ?
+                          AND order_id = ?
+                          AND command_type = 'SUBMIT'
+                        LIMIT 1
+                        """,
+                ps -> {
+                    ps.setString(1, brokerCode);
+                    ps.setString(2, wireMessageId);
+                    ps.setBytes(3, UuidBytes.toBytes(orderId));
+                },
+                rs -> rs.next() ? Optional.of(rs.getString("response_state")) : Optional.empty()
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public boolean cancelAttemptMatches(String brokerCode, String wireMessageId, UUID orderId) {
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM broker_command_attempt
+                        WHERE broker_code = ?
+                          AND wire_message_id = ?
+                          AND order_id = ?
+                          AND command_type = 'CANCEL'
+                          AND (
+                              transport_state = 'SENT'
+                              OR (transport_state = 'CREATED' AND ack_deadline_at IS NOT NULL)
+                          )
+                        """,
+                Integer.class,
+                brokerCode,
+                wireMessageId,
+                UuidBytes.toBytes(orderId)
+        );
+        return count != null && count > 0;
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<String> findCancelAttemptResponseState(String brokerCode, String wireMessageId, UUID orderId) {
+        return jdbcTemplate.query(
+                """
+                        SELECT CASE
+                            WHEN transport_state = 'ACKED' THEN 'ACKED'
+                            WHEN transport_state = 'SENT'
+                                OR (transport_state = 'CREATED' AND ack_deadline_at IS NOT NULL)
+                                THEN 'ELIGIBLE'
+                            ELSE 'INELIGIBLE'
+                        END AS response_state
+                        FROM broker_command_attempt
+                        WHERE broker_code = ?
+                          AND wire_message_id = ?
+                          AND order_id = ?
+                          AND command_type = 'CANCEL'
+                        LIMIT 1
+                        """,
+                ps -> {
+                    ps.setString(1, brokerCode);
+                    ps.setString(2, wireMessageId);
+                    ps.setBytes(3, UuidBytes.toBytes(orderId));
+                },
+                rs -> rs.next() ? Optional.of(rs.getString("response_state")) : Optional.empty()
+        );
     }
 
     @Transactional(readOnly = true)
@@ -602,6 +859,21 @@ public class GatewayJdbcRepository {
     }
 
     @Transactional(readOnly = true)
+    public long countOutboxByAggregateIdAndMessageType(UUID aggregateId, String messageType) {
+        return jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM outbox_message
+                        WHERE aggregate_id = ?
+                          AND message_type = ?
+                        """,
+                Long.class,
+                UuidBytes.toBytes(aggregateId),
+                messageType
+        );
+    }
+
+    @Transactional(readOnly = true)
     public long countParkedByErrorCode(String errorCode) {
         return jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM parked_message WHERE error_code = ?",
@@ -625,6 +897,23 @@ public class GatewayJdbcRepository {
         );
     }
 
+    @Transactional(readOnly = true)
+    public long countAttemptsByOrderIdTypeAndState(UUID orderId, String commandType, String state) {
+        return jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM broker_command_attempt
+                        WHERE order_id = ?
+                          AND command_type = ?
+                          AND transport_state = ?
+                        """,
+                Long.class,
+                UuidBytes.toBytes(orderId),
+                commandType,
+                state
+        );
+    }
+
     private String writeJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -642,6 +931,7 @@ public class GatewayJdbcRepository {
                 rs.getString("broker_code"),
                 rs.getString("wire_message_id"),
                 rs.getString("trace_id"),
+                rs.getString("broker_order_id"),
                 rs.getString("payload_json"),
                 rs.getTimestamp("created_at").toInstant()
         );

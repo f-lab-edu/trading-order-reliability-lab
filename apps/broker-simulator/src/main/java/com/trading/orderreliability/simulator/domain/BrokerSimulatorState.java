@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class BrokerSimulatorState {
 
     private static final String REJECT_CODE = "MARKET_CLOSED";
+    private static final String CANCEL_REJECT_CODE = "TOO_LATE_CANCEL";
 
     private final Clock clock;
     private final AtomicReference<SimulatorScenario> scenario = new AtomicReference<>(SimulatorScenario.ACK_SUCCESS);
@@ -110,7 +111,9 @@ public class BrokerSimulatorState {
             if (current == null) {
                 throw new IllegalArgumentException("simulator order not found");
             }
-            if (current.status() == SimulatorOrderStatus.REJECTED || current.status() == SimulatorOrderStatus.FILLED) {
+            if (current.status() == SimulatorOrderStatus.REJECTED
+                    || current.status() == SimulatorOrderStatus.FILLED
+                    || current.status() == SimulatorOrderStatus.CANCELED) {
                 throw new IllegalStateException("fill requires an active accepted order");
             }
             long nextCumQty = current.cumQty() + lastFillQty;
@@ -132,6 +135,57 @@ public class BrokerSimulatorState {
                     nextLeavesQty,
                     nextStatus,
                     current.rejectCode(),
+                    Instant.now(clock)
+            );
+        });
+    }
+
+    public SimulatorOrder cancel(UUID orderId, String brokerOrderId) {
+        SimulatorOrder order = findForStatusQuery(orderId, brokerOrderId)
+                .orElseThrow(() -> new IllegalArgumentException("simulator order not found"));
+        return ordersById.compute(order.orderId(), (ignored, current) -> {
+            if (current == null) {
+                throw new IllegalArgumentException("simulator order not found");
+            }
+            if (current.status() == SimulatorOrderStatus.REJECTED
+                    || current.status() == SimulatorOrderStatus.FILLED
+                    || current.status() == SimulatorOrderStatus.CANCELED) {
+                throw new IllegalStateException("cancel requires an active accepted order");
+            }
+            return new SimulatorOrder(
+                    current.orderId(),
+                    current.brokerOrderId(),
+                    current.accountId(),
+                    current.symbol(),
+                    current.traceId(),
+                    current.orderQty(),
+                    current.cumQty(),
+                    0,
+                    SimulatorOrderStatus.CANCELED,
+                    current.rejectCode(),
+                    Instant.now(clock)
+            );
+        });
+    }
+
+    public SimulatorOrder rejectCancel(UUID orderId, String brokerOrderId) {
+        SimulatorOrder order = findForStatusQuery(orderId, brokerOrderId)
+                .orElseThrow(() -> new IllegalArgumentException("simulator order not found"));
+        return ordersById.compute(order.orderId(), (ignored, current) -> {
+            if (current == null) {
+                throw new IllegalArgumentException("simulator order not found");
+            }
+            return new SimulatorOrder(
+                    current.orderId(),
+                    current.brokerOrderId(),
+                    current.accountId(),
+                    current.symbol(),
+                    current.traceId(),
+                    current.orderQty(),
+                    current.cumQty(),
+                    current.leavesQty(),
+                    current.status(),
+                    CANCEL_REJECT_CODE,
                     Instant.now(clock)
             );
         });

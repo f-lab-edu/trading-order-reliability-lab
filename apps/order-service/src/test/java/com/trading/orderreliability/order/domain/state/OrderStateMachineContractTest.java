@@ -56,6 +56,35 @@ class OrderStateMachineContractTest {
     }
 
     @Test
+    @DisplayName("PENDING_CANCEL 주문은 늦은 브로커 접수 이벤트가 도착해도 PENDING_CANCEL을 유지한다")
+    void pendingCancelOrderAcknowledgedKeepsPendingCancel() {
+        Order order = pendingAckOrder().withStatus(OrderStatus.PENDING_CANCEL, now.minusSeconds(1));
+
+        OrderTransition transition = stateMachine.transition(
+                order,
+                OrderTransitionRequest.of(OrderTransitionTrigger.BROKER_ORDER_ACKNOWLEDGED, now, "ack after cancel")
+        );
+
+        assertThat(transition.nextStatus()).isEqualTo(OrderStatus.PENDING_CANCEL);
+        assertThat(transition.changed()).isFalse();
+        assertThat(transition.nextOrder().terminalAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("PENDING_CANCEL 주문은 원 주문 거절 이벤트로 REJECTED 상태가 된다")
+    void pendingCancelOrderRejectedTransitionsToRejected() {
+        Order order = pendingAckOrder().withStatus(OrderStatus.PENDING_CANCEL, now.minusSeconds(1));
+
+        OrderTransition transition = stateMachine.transition(
+                order,
+                OrderTransitionRequest.of(OrderTransitionTrigger.BROKER_ORDER_REJECTED, now, "reject after cancel")
+        );
+
+        assertThat(transition.nextStatus()).isEqualTo(OrderStatus.REJECTED);
+        assertThat(transition.nextOrder().terminalAt()).isEqualTo(now);
+    }
+
+    @Test
     @DisplayName("LIVE 주문은 부분체결 이벤트로 PARTIALLY_FILLED 상태가 되고 체결 수량을 반영한다")
     void liveOrderPartiallyFilledTransitionsToPartiallyFilled() {
         Order order = pendingAckOrder().withStatus(OrderStatus.LIVE, now);

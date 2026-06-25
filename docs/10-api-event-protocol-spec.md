@@ -466,6 +466,8 @@ Order Service는 `brokerEventDedupKey`를 opaque value로 취급한다.
   "lastFillQty": 40,
   "cumQty": 40,
   "leavesQty": 60,
+  "brokerOrderId": "BRK-20260513-000001",
+  "executionId": "EXEC-20260513-000001",
   "brokerEventTime": "2026-05-13T01:18:00.100Z"
 }
 ```
@@ -482,6 +484,8 @@ Order Service는 `brokerEventDedupKey`를 opaque value로 취급한다.
   "lastFillQty": 60,
   "cumQty": 100,
   "leavesQty": 0,
+  "brokerOrderId": "BRK-20260513-000001",
+  "executionId": "EXEC-20260513-000002",
   "brokerEventTime": "2026-05-13T01:20:00.100Z"
 }
 ```
@@ -495,6 +499,7 @@ Order Service는 `brokerEventDedupKey`를 opaque value로 취급한다.
   "orderId": "018f8b7a-4c4e-7b20-9f0e-9dfeb33e92aa",
   "brokerEventDedupKey": "opaque-dedup-key",
   "payloadHash": "sha256-hash",
+  "brokerOrderId": "BRK-20260513-000001",
   "brokerEventTime": "2026-05-13T01:21:00.100Z"
 }
 ```
@@ -508,6 +513,7 @@ Order Service는 `brokerEventDedupKey`를 opaque value로 취급한다.
   "orderId": "018f8b7a-4c4e-7b20-9f0e-9dfeb33e92aa",
   "brokerEventDedupKey": "opaque-dedup-key",
   "payloadHash": "sha256-hash",
+  "brokerOrderId": "BRK-20260513-000001",
   "rejectCode": "TOO_LATE_TO_CANCEL",
   "rejectMessage": "Order is already filled",
   "brokerEventTime": "2026-05-13T01:21:00.100Z"

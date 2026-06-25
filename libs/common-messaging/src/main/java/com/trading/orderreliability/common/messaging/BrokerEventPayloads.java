@@ -52,4 +52,24 @@ public final class BrokerEventPayloads {
             Instant brokerEventTime
     ) {
     }
+
+    public record BrokerCancelAcknowledgedPayload(
+            UUID orderId,
+            String brokerEventDedupKey,
+            String payloadHash,
+            String brokerOrderId,
+            Instant brokerEventTime
+    ) {
+    }
+
+    public record BrokerCancelRejectedPayload(
+            UUID orderId,
+            String brokerEventDedupKey,
+            String payloadHash,
+            String brokerOrderId,
+            String rejectCode,
+            String rejectMessage,
+            Instant brokerEventTime
+    ) {
+    }
 }

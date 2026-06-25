@@ -293,6 +293,8 @@ Body length: **64**
 
 이 규칙은 사용자가 `PENDING_ACK` 주문에 대해 취소를 요청했지만 Gateway가 아직 `brokerOrderId` binding을 확보하지 못한 경우를 처리하기 위한 것이다.
 
+M5 Gateway 기본 정책은 이 fallback을 실제 `CXLQ` 송신 정책으로 사용하지 않는다. Gateway는 취소 intent와 `CancelOrderCommand` attempt를 먼저 저장하고, `broker_order_binding.accepted_at`과 `brokerOrderId`가 확보된 뒤에 `CXLQ`를 보낸다. Blank fallback은 Simulator/프로토콜 호환용 허용 규칙이며, binding 전 취소 송신은 후속 recovery/reconciliation 설계에서 별도로 다룬다.
+
 ---
 
 ## 10-A.6.6 `CXLA` 취소 완료

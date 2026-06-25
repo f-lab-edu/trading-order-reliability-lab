@@ -4,5 +4,6 @@ public enum SimulatorOrderStatus {
     ACCEPTED,
     PARTIALLY_FILLED,
     FILLED,
-    REJECTED
+    REJECTED,
+    CANCELED
 }

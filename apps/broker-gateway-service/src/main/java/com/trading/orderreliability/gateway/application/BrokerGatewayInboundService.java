@@ -4,11 +4,15 @@ import com.trading.orderreliability.broker.protocol.BrokerCommonHeader;
 import com.trading.orderreliability.broker.protocol.BrokerFrameCodec;
 import com.trading.orderreliability.broker.protocol.BrokerMalformedType;
 import com.trading.orderreliability.broker.protocol.BrokerMessage;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelAccepted;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelRejected;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.Fill;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderAccepted;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderRejected;
 import com.trading.orderreliability.broker.protocol.BrokerParseResult;
 import com.trading.orderreliability.common.id.UuidV7Generator;
+import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerCancelAcknowledgedPayload;
+import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerCancelRejectedPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderAcknowledgedPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderFilledPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderPartiallyFilledPayload;
@@ -20,6 +24,7 @@ import com.trading.orderreliability.gateway.persistence.GatewayJdbcRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -32,6 +37,8 @@ public class BrokerGatewayInboundService {
     private static final String SOURCE_TOPIC = "broker-gateway-tcp-inbound";
     private static final String ERROR_CODE_ATTEMPT_MISMATCH = "BROKER_EVENT_ATTEMPT_MISMATCH";
     private static final String ERROR_CODE_BINDING_MISMATCH = "BROKER_EVENT_BINDING_MISMATCH";
+    private static final String RESPONSE_STATE_ACKED = "ACKED";
+    private static final String RESPONSE_STATE_ELIGIBLE = "ELIGIBLE";
 
     private final BrokerFrameCodec codec = new BrokerFrameCodec();
     private final GatewayJdbcRepository repository;
@@ -87,6 +94,10 @@ public class BrokerGatewayInboundService {
             handleRejected(header, rejected, success.payloadHash(), frame, now);
         } else if (message instanceof Fill fill) {
             handleFill(header, fill, success.payloadHash(), frame, now);
+        } else if (message instanceof CancelAccepted accepted) {
+            handleCancelAccepted(header, accepted, success.payloadHash(), frame, now);
+        } else if (message instanceof CancelRejected rejected) {
+            handleCancelRejected(header, rejected, success.payloadHash(), frame, now);
         }
     }
 
@@ -102,15 +113,38 @@ public class BrokerGatewayInboundService {
             byte[] frame,
             Instant now
     ) {
-        if (!repository.submitAttemptMatches(properties.getCode(), header.wireMessageId(), header.orderId())) {
+        Optional<String> responseState = repository.findSubmitAttemptResponseState(
+                properties.getCode(),
+                header.wireMessageId(),
+                header.orderId()
+        );
+        if (responseState.isEmpty()) {
             parkInboundFrame(ERROR_CODE_ATTEMPT_MISMATCH, "ACKN does not match a known submit attempt", frame, now);
             return;
         }
-        if (!repository.updateBindingAccepted(header.orderId(), properties.getCode(), accepted.brokerOrderId(), accepted.acceptedAtUtc())) {
+        if (RESPONSE_STATE_ACKED.equals(responseState.get())) {
+            if (repository.findOrderIdByBrokerOrderId(properties.getCode(), accepted.brokerOrderId())
+                    .filter(boundOrderId -> boundOrderId.equals(header.orderId()))
+                    .isEmpty()) {
+                parkInboundFrame(ERROR_CODE_BINDING_MISMATCH, "ACKN broker order id does not match accepted binding", frame, now);
+            }
+            return;
+        }
+        if (!RESPONSE_STATE_ELIGIBLE.equals(responseState.get())) {
+            parkInboundFrame(ERROR_CODE_ATTEMPT_MISMATCH, "ACKN does not match an active submit attempt", frame, now);
+            return;
+        }
+        if (!repository.acceptSubmitAcknowledgement(
+                header.orderId(),
+                properties.getCode(),
+                header.wireMessageId(),
+                accepted.brokerOrderId(),
+                accepted.acceptedAtUtc(),
+                now
+        )) {
             parkInboundFrame(ERROR_CODE_BINDING_MISMATCH, "ACKN submit attempt has no broker order binding", frame, now);
             return;
         }
-        repository.markAttemptAcked(properties.getCode(), header.wireMessageId(), accepted.brokerOrderId(), now);
         repository.appendBrokerEvent(
                 uuidGenerator.generate(),
                 header.orderId(),
@@ -138,7 +172,16 @@ public class BrokerGatewayInboundService {
             parkInboundFrame(ERROR_CODE_ATTEMPT_MISMATCH, "RJCT does not match a known submit attempt", frame, now);
             return;
         }
-        repository.markAttemptAcked(properties.getCode(), header.wireMessageId(), null, now);
+        if (!repository.markAttemptAcked(properties.getCode(), header.wireMessageId(), null, now)) {
+            return;
+        }
+        repository.markCreatedCancelAttemptsFailed(
+                header.orderId(),
+                properties.getCode(),
+                "SUBMIT_REJECTED_BEFORE_CANCEL",
+                "Submit was rejected before cancel could be dispatched",
+                now
+        );
         repository.appendBrokerEvent(
                 uuidGenerator.generate(),
                 header.orderId(),
@@ -199,6 +242,92 @@ public class BrokerGatewayInboundService {
         );
     }
 
+    private void handleCancelAccepted(
+            BrokerCommonHeader header,
+            CancelAccepted accepted,
+            String payloadHash,
+            byte[] frame,
+            Instant now
+    ) {
+        if (!cancelAttemptMatches(header, accepted.brokerOrderId(), frame, now)) {
+            return;
+        }
+        if (!repository.markAttemptAcked(properties.getCode(), header.wireMessageId(), accepted.brokerOrderId(), now)) {
+            return;
+        }
+        repository.appendBrokerEvent(
+                uuidGenerator.generate(),
+                header.orderId(),
+                MessageTypes.BROKER_CANCEL_ACKNOWLEDGED,
+                new BrokerCancelAcknowledgedPayload(
+                        header.orderId(),
+                        dedupKey(header.messageId().code(), header.wireMessageId(), header.orderId()),
+                        payloadHash,
+                        accepted.brokerOrderId(),
+                        accepted.canceledAtUtc()
+                ),
+                header.traceId(),
+                now
+        );
+    }
+
+    private void handleCancelRejected(
+            BrokerCommonHeader header,
+            CancelRejected rejected,
+            String payloadHash,
+            byte[] frame,
+            Instant now
+    ) {
+        if (!cancelAttemptMatches(header, rejected.brokerOrderId(), frame, now)) {
+            return;
+        }
+        if (!repository.markAttemptAcked(properties.getCode(), header.wireMessageId(), rejected.brokerOrderId(), now)) {
+            return;
+        }
+        repository.appendBrokerEvent(
+                uuidGenerator.generate(),
+                header.orderId(),
+                MessageTypes.BROKER_CANCEL_REJECTED,
+                new BrokerCancelRejectedPayload(
+                        header.orderId(),
+                        dedupKey(header.messageId().code(), header.wireMessageId(), header.orderId()),
+                        payloadHash,
+                        rejected.brokerOrderId(),
+                        rejected.rejectCode(),
+                        rejected.rejectReason(),
+                        header.sentAtUtc()
+                ),
+                header.traceId(),
+                now
+        );
+    }
+
+    private boolean cancelAttemptMatches(BrokerCommonHeader header, String brokerOrderId, byte[] frame, Instant now) {
+        Optional<String> responseState = repository.findCancelAttemptResponseState(
+                properties.getCode(),
+                header.wireMessageId(),
+                header.orderId()
+        );
+        if (responseState.isEmpty()) {
+            parkInboundFrame(ERROR_CODE_ATTEMPT_MISMATCH, "Cancel response does not match a known cancel attempt", frame, now);
+            return false;
+        }
+        if (RESPONSE_STATE_ACKED.equals(responseState.get())) {
+            return false;
+        }
+        if (!RESPONSE_STATE_ELIGIBLE.equals(responseState.get())) {
+            parkInboundFrame(ERROR_CODE_ATTEMPT_MISMATCH, "Cancel response does not match an active cancel attempt", frame, now);
+            return false;
+        }
+        if (repository.findOrderIdByBrokerOrderId(properties.getCode(), brokerOrderId)
+                .filter(boundOrderId -> boundOrderId.equals(header.orderId()))
+                .isEmpty()) {
+            parkInboundFrame(ERROR_CODE_BINDING_MISMATCH, "Cancel response does not match a known broker order binding", frame, now);
+            return false;
+        }
+        return true;
+    }
+
     private void insertMalformedJournal(
             BrokerMalformedType malformedType,
             String reason,
@@ -250,6 +379,12 @@ public class BrokerGatewayInboundService {
         }
         if (message instanceof Fill fill) {
             return fill.brokerOrderId();
+        }
+        if (message instanceof CancelAccepted accepted) {
+            return accepted.brokerOrderId();
+        }
+        if (message instanceof CancelRejected rejected) {
+            return rejected.brokerOrderId();
         }
         return null;
     }

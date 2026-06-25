@@ -41,6 +41,7 @@ public class BrokerCommandDispatchScheduler {
     )
     public void dispatchCreatedAttempts() {
         parkExpiredSubmitOutcomes();
+        dispatchCreatedCancelAttempts();
         Instant now = clock.instant();
         List<GatewayCommandAttemptRecord> attempts = repository.claimCreatedSubmitAttempts(
                 properties.getCommandDispatchBatchSize(),
@@ -52,6 +53,26 @@ public class BrokerCommandDispatchScheduler {
                 dispatcher.dispatchSubmit(attempt);
             } catch (RuntimeException e) {
                 log.warn("Failed to dispatch broker submit attempt: attemptId={}, orderId={}, wireMessageId={}",
+                        attempt.id(),
+                        attempt.orderId(),
+                        attempt.wireMessageId(),
+                        e);
+            }
+        }
+    }
+
+    private void dispatchCreatedCancelAttempts() {
+        Instant now = clock.instant();
+        List<GatewayCommandAttemptRecord> attempts = repository.claimDispatchableCancelAttempts(
+                properties.getCommandDispatchBatchSize(),
+                now,
+                now.plusMillis(properties.getCommandAckTimeoutMs())
+        );
+        for (GatewayCommandAttemptRecord attempt : attempts) {
+            try {
+                dispatcher.dispatchCancel(attempt);
+            } catch (RuntimeException e) {
+                log.warn("Failed to dispatch broker cancel attempt: attemptId={}, orderId={}, wireMessageId={}",
                         attempt.id(),
                         attempt.orderId(),
                         attempt.wireMessageId(),

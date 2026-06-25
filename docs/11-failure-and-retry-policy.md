@@ -95,6 +95,14 @@ Recovery Service는 Gateway report로 attempt 메타데이터를 기록하지만
 
 특히 브로커 command는 이미 외부 브로커에 도달했을 수 있으므로, timeout만 보고 같은 command를 즉시 재전송하면 중복 주문이나 잘못된 취소가 발생할 수 있다.
 
+Broker Gateway의 command attempt에서 `ack_deadline_at`은 command type과 전송 단계에 따라 다르게 해석된다.
+
+* submit `CREATED` attempt에서는 dispatch fence 역할을 한다. 현재 구현은 claim 이후 deadline이 지나면 보수적으로 submit 결과 불확실로 보고 `UNKNOWN`/reconciliation 경로로 보낸다.
+* cancel `CREATED` attempt에서는 accepted binding 이후 dispatcher claim lease 역할을 한다. 프로세스가 `CXLQ` OUT journal 기록 전에 중단되면 deadline 이후 다시 dispatch 후보로 조회할 수 있다. OUT `CXLQ` journal이 이미 있으면 TCP 송신 성공 여부가 불확실하므로 같은 `wireMessageId`를 직접 재송신하지 않는다.
+* `SENT` attempt에서는 broker 응답 deadline 역할을 한다. 이 deadline 이후에는 같은 command를 직접 재전송하지 않고 `UNKNOWN`/reconciliation 경로로 수렴한다.
+
+M5 cancel 기본 흐름에서 `CANCEL` response는 송신된 `SENT` attempt 또는 dispatch claim이 잡힌 `CREATED` attempt에만 매칭된다. `CXLQ`가 `SENT` 된 뒤 `CXLA`/`CXLR`이 오지 않는 경우의 `PENDING_CANCEL -> UNKNOWN` 처리는 M8 범위다.
+
 | 대상                  |     자동 재시도 여부 | 기준                                                     |
 | ------------------- | ------------: | ------------------------------------------------------ |
 | 메시지 발행              |             Y | Outbox 기반 재시도                                          |

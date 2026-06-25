@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trading.orderreliability.common.id.UuidV7Generator;
+import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerCancelAcknowledgedPayload;
+import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerCancelRejectedPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderAcknowledgedPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderFilledPayload;
 import com.trading.orderreliability.common.messaging.BrokerEventPayloads.BrokerOrderPartiallyFilledPayload;
@@ -96,30 +98,95 @@ public class BrokerEventApplicationService {
         OrderTransition transition = stateMachine.transition(current, event.transitionRequest());
         Order next = transition.nextOrder();
         orderRepository.updateState(next);
-        resolvePlaceInstruction(orderId, event, next.updatedAt());
+        resolveInstructions(orderId, event, transition, next.updatedAt());
         insertBrokerEvent(envelope, event);
         publishAfterCommit(transition, next, event.occurredAt());
         return BrokerEventApplyResult.APPLIED;
     }
 
-    private void resolvePlaceInstruction(OrderId orderId, BrokerEvent event, Instant resolvedAt) {
-        if (event.trigger() == OrderTransitionTrigger.BROKER_ORDER_REJECTED) {
-            instructionRepository.resolveRequestedPlaceInstruction(
-                    orderId,
-                    OrderInstructionStatus.REJECTED,
-                    "BROKER_ORDER_REJECTED",
-                    event.resultMessage(),
-                    resolvedAt
-            );
-            return;
+    private void resolveInstructions(OrderId orderId, BrokerEvent event, OrderTransition transition, Instant resolvedAt) {
+        switch (event.trigger()) {
+            case BROKER_ORDER_REJECTED -> {
+                instructionRepository.resolveRequestedPlaceInstruction(
+                        orderId,
+                        OrderInstructionStatus.REJECTED,
+                        "BROKER_ORDER_REJECTED",
+                        event.resultMessage(),
+                        resolvedAt
+                );
+                instructionRepository.resolveRequestedCancelInstruction(
+                        orderId,
+                        OrderInstructionStatus.NOT_APPLIED,
+                        "BROKER_ORDER_REJECTED_BEFORE_CANCEL",
+                        event.resultMessage(),
+                        resolvedAt
+                );
+            }
+            case BROKER_ORDER_ACKNOWLEDGED, BROKER_ORDER_PARTIALLY_FILLED ->
+                instructionRepository.resolveRequestedPlaceInstruction(
+                        orderId,
+                        OrderInstructionStatus.COMPLETED,
+                        "BROKER_ORDER_ACCEPTED",
+                        event.resultMessage(),
+                        resolvedAt
+                );
+            case BROKER_ORDER_FILLED -> {
+                instructionRepository.resolveRequestedPlaceInstruction(
+                            orderId,
+                            OrderInstructionStatus.COMPLETED,
+                            "BROKER_ORDER_ACCEPTED",
+                            event.resultMessage(),
+                            resolvedAt
+                );
+                instructionRepository.resolveRequestedCancelInstruction(
+                        orderId,
+                        OrderInstructionStatus.NOT_APPLIED,
+                        "ORDER_FILLED_BEFORE_CANCEL",
+                        event.resultMessage(),
+                        resolvedAt
+                );
+            }
+            case BROKER_CANCEL_ACKNOWLEDGED -> {
+                if (transition.changed()) {
+                    instructionRepository.resolveRequestedCancelInstruction(
+                            orderId,
+                            OrderInstructionStatus.COMPLETED,
+                            "BROKER_CANCEL_ACK",
+                            event.resultMessage(),
+                            resolvedAt
+                    );
+                } else {
+                    instructionRepository.resolveRequestedCancelInstruction(
+                            orderId,
+                            OrderInstructionStatus.NOT_APPLIED,
+                            "BROKER_CANCEL_ACK_AFTER_TERMINAL",
+                            event.resultMessage(),
+                            resolvedAt
+                    );
+                }
+            }
+            case BROKER_CANCEL_REJECTED -> {
+                if (transition.changed()) {
+                    instructionRepository.resolveRequestedCancelInstruction(
+                            orderId,
+                            OrderInstructionStatus.REJECTED,
+                            "BROKER_CANCEL_REJECTED",
+                            event.resultMessage(),
+                            resolvedAt
+                    );
+                } else {
+                    instructionRepository.resolveRequestedCancelInstruction(
+                            orderId,
+                            OrderInstructionStatus.NOT_APPLIED,
+                            "BROKER_CANCEL_REJECTED_AFTER_TERMINAL",
+                            event.resultMessage(),
+                            resolvedAt
+                    );
+                }
+            }
+            default -> {
+            }
         }
-        instructionRepository.resolveRequestedPlaceInstruction(
-                orderId,
-                OrderInstructionStatus.COMPLETED,
-                "BROKER_ORDER_ACCEPTED",
-                event.resultMessage(),
-                resolvedAt
-        );
     }
 
     private void insertBrokerEvent(MessageEnvelope<JsonNode> envelope, BrokerEvent event) {
@@ -196,6 +263,8 @@ public class BrokerEventApplicationService {
             case MessageTypes.BROKER_ORDER_REJECTED -> rejected(envelope);
             case MessageTypes.BROKER_ORDER_PARTIALLY_FILLED -> partiallyFilled(envelope);
             case MessageTypes.BROKER_ORDER_FILLED -> filled(envelope);
+            case MessageTypes.BROKER_CANCEL_ACKNOWLEDGED -> cancelAcknowledged(envelope);
+            case MessageTypes.BROKER_CANCEL_REJECTED -> cancelRejected(envelope);
             default -> throw new IllegalArgumentException("Unsupported broker event type: " + envelope.messageType());
         };
     }
@@ -279,6 +348,46 @@ public class BrokerEventApplicationService {
                 payload.lastFillQty(),
                 payload.cumQty(),
                 payload.leavesQty()
+        );
+    }
+
+    private BrokerEvent cancelAcknowledged(MessageEnvelope<JsonNode> envelope) {
+        BrokerCancelAcknowledgedPayload payload = objectMapper.convertValue(envelope.payload(), BrokerCancelAcknowledgedPayload.class);
+        return new BrokerEvent(
+                payload.orderId(),
+                payload.brokerEventDedupKey(),
+                payload.payloadHash(),
+                payload.brokerEventTime(),
+                OrderTransitionTrigger.BROKER_CANCEL_ACKNOWLEDGED,
+                OrderTransitionRequest.of(
+                        OrderTransitionTrigger.BROKER_CANCEL_ACKNOWLEDGED,
+                        payload.brokerEventTime(),
+                        "Broker cancel acknowledged"
+                ),
+                "brokerOrderId=" + payload.brokerOrderId(),
+                0,
+                0,
+                0
+        );
+    }
+
+    private BrokerEvent cancelRejected(MessageEnvelope<JsonNode> envelope) {
+        BrokerCancelRejectedPayload payload = objectMapper.convertValue(envelope.payload(), BrokerCancelRejectedPayload.class);
+        return new BrokerEvent(
+                payload.orderId(),
+                payload.brokerEventDedupKey(),
+                payload.payloadHash(),
+                payload.brokerEventTime(),
+                OrderTransitionTrigger.BROKER_CANCEL_REJECTED,
+                OrderTransitionRequest.of(
+                        OrderTransitionTrigger.BROKER_CANCEL_REJECTED,
+                        payload.brokerEventTime(),
+                        "Broker cancel rejected"
+                ),
+                payload.rejectCode() + ": " + payload.rejectMessage(),
+                0,
+                0,
+                0
         );
     }
 

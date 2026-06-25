@@ -5,9 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trading.orderreliability.broker.protocol.BrokerCommonHeader;
 import com.trading.orderreliability.broker.protocol.BrokerFrameCodec;
 import com.trading.orderreliability.broker.protocol.BrokerMessageId;
+import com.trading.orderreliability.broker.protocol.BrokerMessage;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelAccepted;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelRejected;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelRequest;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderAccepted;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderRequest;
 import com.trading.orderreliability.broker.protocol.BrokerParseResult;
+import com.trading.orderreliability.common.messaging.BrokerCommandPayloads.CancelOrderCommandPayload;
 import com.trading.orderreliability.common.messaging.BrokerCommandPayloads.SubmitOrderCommandPayload;
 import com.trading.orderreliability.common.messaging.MessageEnvelope;
 import com.trading.orderreliability.common.messaging.MessageTypes;
@@ -30,7 +35,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -102,6 +108,104 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
         registry.add("gateway.broker.port", BROKER_SERVER::port);
     }
 
+    @Test
+    @DisplayName("CancelOrderCommand는 accepted binding 확인 후 TCP CXLQ와 CXLA broker event outbox로 이어진다")
+    @Sql(statements = {
+            "DELETE FROM outbox_message",
+            "DELETE FROM broker_message_journal",
+            "DELETE FROM broker_command_attempt",
+            "DELETE FROM broker_order_binding",
+            "DELETE FROM processed_message",
+            "DELETE FROM parked_message"
+    })
+    void cancelOrderCommandWaitsForBindingThenReachesTcpAndCreatesAcknowledgedBrokerEventOutbox() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        kafkaTemplate.send(MessagingTopics.BROKER_COMMAND, orderId.toString(), submitEnvelope(orderId)).get(10, TimeUnit.SECONDS);
+        awaitCreatedAttempt(orderId);
+
+        dispatchScheduler.dispatchCreatedAttempts();
+        assertThat(BROKER_SERVER.awaitOrderRequest().header().orderId()).isEqualTo(orderId);
+        awaitOutbox(orderId, MessageTypes.BROKER_ORDER_ACKNOWLEDGED);
+
+        kafkaTemplate.send(MessagingTopics.BROKER_COMMAND, orderId.toString(), cancelEnvelope(orderId)).get(10, TimeUnit.SECONDS);
+        awaitDispatchableCancelAttempt(orderId);
+
+        dispatchScheduler.dispatchCreatedAttempts();
+
+        CancelRequest cancelRequest = BROKER_SERVER.awaitCancelRequest();
+        assertThat(cancelRequest.header().messageId()).isEqualTo(BrokerMessageId.CXLQ);
+        assertThat(cancelRequest.header().orderId()).isEqualTo(orderId);
+        assertThat(cancelRequest.header().traceId()).isEqualTo("trace-gateway-cancel-dispatch-smoke");
+        assertThat(cancelRequest.brokerOrderId()).isEqualTo("BRK-SMOKE-ACK-001");
+
+        GatewayOutboxMessageRecord outbox = awaitOutbox(orderId, MessageTypes.BROKER_CANCEL_ACKNOWLEDGED);
+        JsonNode payload = objectMapper.readTree(outbox.payloadJson());
+        assertThat(payload.path("brokerOrderId").asText()).isEqualTo("BRK-SMOKE-ACK-001");
+        assertThat(repository.countAttemptsByOrderIdTypeAndState(orderId, "CANCEL", "ACKED")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("ACKN 전에 처리된 CancelOrderCommand는 accepted binding 생성 후 CXLQ로 송신된다")
+    @Sql(statements = {
+            "DELETE FROM outbox_message",
+            "DELETE FROM broker_message_journal",
+            "DELETE FROM broker_command_attempt",
+            "DELETE FROM broker_order_binding",
+            "DELETE FROM processed_message",
+            "DELETE FROM parked_message"
+    })
+    void cancelOrderCommandConsumedBeforeAckDispatchesAfterAcceptedBinding() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        commandService.handle(cancelEnvelope(orderId));
+        assertThat(repository.findDispatchableCancelAttempts(10)).noneMatch(attempt -> attempt.orderId().equals(orderId));
+
+        commandService.handle(submitEnvelope(orderId));
+        dispatchScheduler.dispatchCreatedAttempts();
+
+        assertThat(BROKER_SERVER.awaitOrderRequest().header().orderId()).isEqualTo(orderId);
+        awaitOutbox(orderId, MessageTypes.BROKER_ORDER_ACKNOWLEDGED);
+        awaitDispatchableCancelAttempt(orderId);
+
+        dispatchScheduler.dispatchCreatedAttempts();
+
+        CancelRequest cancelRequest = BROKER_SERVER.awaitCancelRequest();
+        assertThat(cancelRequest.header().orderId()).isEqualTo(orderId);
+        assertThat(cancelRequest.brokerOrderId()).isEqualTo("BRK-SMOKE-ACK-001");
+        assertThat(awaitOutbox(orderId, MessageTypes.BROKER_CANCEL_ACKNOWLEDGED)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("CXLQ에 대한 CXLR 응답은 BrokerCancelRejected outbox로 이어진다")
+    @Sql(statements = {
+            "DELETE FROM outbox_message",
+            "DELETE FROM broker_message_journal",
+            "DELETE FROM broker_command_attempt",
+            "DELETE FROM broker_order_binding",
+            "DELETE FROM processed_message",
+            "DELETE FROM parked_message"
+    })
+    void cancelOrderCommandWithRejectedBrokerResponseCreatesRejectedBrokerEventOutbox() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        commandService.handle(submitEnvelope(orderId));
+        dispatchScheduler.dispatchCreatedAttempts();
+        assertThat(BROKER_SERVER.awaitOrderRequest().header().orderId()).isEqualTo(orderId);
+        awaitOutbox(orderId, MessageTypes.BROKER_ORDER_ACKNOWLEDGED);
+
+        commandService.handle(cancelEnvelope(orderId));
+        awaitDispatchableCancelAttempt(orderId);
+        BROKER_SERVER.rejectNextCancel();
+
+        dispatchScheduler.dispatchCreatedAttempts();
+
+        CancelRequest cancelRequest = BROKER_SERVER.awaitCancelRequest();
+        assertThat(cancelRequest.header().orderId()).isEqualTo(orderId);
+        GatewayOutboxMessageRecord outbox = awaitOutbox(orderId, MessageTypes.BROKER_CANCEL_REJECTED);
+        JsonNode payload = objectMapper.readTree(outbox.payloadJson());
+        assertThat(payload.path("brokerOrderId").asText()).isEqualTo("BRK-SMOKE-ACK-001");
+        assertThat(payload.path("rejectCode").asText()).isEqualTo("TOO_LATE_CANCEL");
+        assertThat(repository.countAttemptsByOrderIdTypeAndState(orderId, "CANCEL", "ACKED")).isEqualTo(1);
+    }
+
     @AfterAll
     static void closeBrokerServer() throws IOException {
         BROKER_SERVER.close();
@@ -132,7 +236,7 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
         assertThat(request.side()).isEqualTo("B");
         assertThat(request.orderType()).isEqualTo("L");
 
-        GatewayOutboxMessageRecord outbox = awaitOutbox(orderId);
+        GatewayOutboxMessageRecord outbox = awaitOutbox(orderId, MessageTypes.BROKER_ORDER_ACKNOWLEDGED);
         assertThat(repository.countJournalByOrderId(orderId)).isEqualTo(2);
 
         assertThat(outboxPublisher.publishAvailable()).isGreaterThanOrEqualTo(1);
@@ -239,19 +343,30 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
         throw new AssertionError("CREATED submit attempt not found for " + orderId);
     }
 
-    private GatewayOutboxMessageRecord awaitOutbox(UUID orderId) throws InterruptedException {
+    private void awaitDispatchableCancelAttempt(UUID orderId) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (repository.findDispatchableCancelAttempts(10).stream().anyMatch(attempt -> attempt.orderId().equals(orderId))) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Dispatchable cancel attempt not found for " + orderId);
+    }
+
+    private GatewayOutboxMessageRecord awaitOutbox(UUID orderId, String messageType) throws InterruptedException {
         long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         while (System.nanoTime() < deadline) {
             var outbox = repository.findOutboxByAggregateIdAndMessageType(
                     orderId,
-                    MessageTypes.BROKER_ORDER_ACKNOWLEDGED
+                    messageType
             );
             if (outbox.isPresent()) {
                 return outbox.get();
             }
             Thread.sleep(100);
         }
-        throw new AssertionError("BrokerOrderAcknowledged outbox not found for " + orderId);
+        throw new AssertionError(messageType + " outbox not found for " + orderId);
     }
 
     private Consumer<String, String> createConsumer() {
@@ -297,13 +412,24 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
         );
     }
 
+    private MessageEnvelope<JsonNode> cancelEnvelope(UUID orderId) {
+        return new MessageEnvelope<>(
+                UUID.randomUUID(),
+                MessageTypes.CANCEL_ORDER_COMMAND,
+                orderId.toString(),
+                Instant.parse("2026-06-13T01:02:00Z"),
+                "trace-gateway-cancel-dispatch-smoke",
+                objectMapper.valueToTree(new CancelOrderCommandPayload(orderId))
+        );
+    }
+
     private static final class FakeBrokerServer implements Closeable {
 
         private final BrokerFrameCodec codec = new BrokerFrameCodec();
         private final ServerSocket serverSocket;
-        private final CountDownLatch requestReceived = new CountDownLatch(1);
-        private final AtomicReference<OrderRequest> orderRequest = new AtomicReference<>();
+        private final BlockingQueue<BrokerMessage> receivedMessages = new LinkedBlockingQueue<>();
         private final AtomicReference<Exception> failure = new AtomicReference<>();
+        private final AtomicReference<CancelResponseMode> nextCancelResponse = new AtomicReference<>(CancelResponseMode.ACK);
         private final Thread thread;
         private volatile Socket clientSocket;
 
@@ -328,33 +454,68 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
         }
 
         OrderRequest awaitOrderRequest() throws Exception {
-            if (!requestReceived.await(10, TimeUnit.SECONDS)) {
-                Exception error = failure.get();
-                if (error != null) {
-                    throw error;
-                }
-                throw new AssertionError("ORDR frame not received by fake broker");
+            BrokerMessage message = awaitMessage();
+            if (message instanceof OrderRequest request) {
+                return request;
             }
-            return orderRequest.get();
+            throw new AssertionError("Expected ORDR frame but received " + message);
+        }
+
+        CancelRequest awaitCancelRequest() throws Exception {
+            BrokerMessage message = awaitMessage();
+            if (message instanceof CancelRequest request) {
+                return request;
+            }
+            throw new AssertionError("Expected CXLQ frame but received " + message);
+        }
+
+        void rejectNextCancel() {
+            nextCancelResponse.set(CancelResponseMode.REJECT);
+        }
+
+        private BrokerMessage awaitMessage() throws Exception {
+            BrokerMessage message = receivedMessages.poll(10, TimeUnit.SECONDS);
+            if (message != null) {
+                return message;
+            }
+            Exception error = failure.get();
+            if (error != null) {
+                throw error;
+            }
+            throw new AssertionError("Broker frame not received by fake broker");
         }
 
         private void run() {
-            try (Socket socket = serverSocket.accept()) {
-                clientSocket = socket;
-                byte[] frame = readFrame(socket);
-                BrokerParseResult parseResult = codec.decode(frame);
-                if (!(parseResult instanceof BrokerParseResult.Success success)
-                        || !(success.message() instanceof OrderRequest request)) {
-                    throw new IllegalStateException("Expected ORDR frame but received " + parseResult);
+            while (!serverSocket.isClosed()) {
+                try (Socket socket = serverSocket.accept()) {
+                    clientSocket = socket;
+                    while (!socket.isClosed()) {
+                        byte[] frame = readFrame(socket);
+                        if (frame == null) {
+                            break;
+                        }
+                        BrokerParseResult parseResult = codec.decode(frame);
+                        if (!(parseResult instanceof BrokerParseResult.Success success)) {
+                            throw new IllegalStateException("Expected broker frame but received " + parseResult);
+                        }
+                        BrokerMessage message = success.message();
+                        receivedMessages.add(message);
+                        if (message instanceof OrderRequest request) {
+                            socket.getOutputStream().write(codec.encode(ack(request)));
+                            socket.getOutputStream().flush();
+                        } else if (message instanceof CancelRequest request) {
+                            BrokerMessage response = nextCancelResponse.getAndSet(CancelResponseMode.ACK) == CancelResponseMode.REJECT
+                                    ? cancelReject(request)
+                                    : cancelAck(request);
+                            socket.getOutputStream().write(codec.encode(response));
+                            socket.getOutputStream().flush();
+                        }
+                    }
+                } catch (Exception e) {
+                    if (!serverSocket.isClosed()) {
+                        failure.set(e);
+                    }
                 }
-                orderRequest.set(request);
-                socket.getOutputStream().write(codec.encode(ack(request)));
-                socket.getOutputStream().flush();
-                requestReceived.countDown();
-                Thread.sleep(250);
-            } catch (Exception e) {
-                failure.set(e);
-                requestReceived.countDown();
             }
         }
 
@@ -372,11 +533,49 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
             );
         }
 
+        private CancelAccepted cancelAck(CancelRequest request) {
+            return new CancelAccepted(
+                    BrokerCommonHeader.of(
+                            BrokerMessageId.CXLA,
+                            request.header().wireMessageId(),
+                            request.header().orderId(),
+                            request.header().traceId(),
+                            Instant.parse("2026-06-13T01:03:00Z")
+                    ),
+                    "BRK-SMOKE-ACK-001",
+                    Instant.parse("2026-06-13T01:03:00Z")
+            );
+        }
+
+        private CancelRejected cancelReject(CancelRequest request) {
+            return new CancelRejected(
+                    BrokerCommonHeader.of(
+                            BrokerMessageId.CXLR,
+                            request.header().wireMessageId(),
+                            request.header().orderId(),
+                            request.header().traceId(),
+                            Instant.parse("2026-06-13T01:03:00Z")
+                    ),
+                    "BRK-SMOKE-ACK-001",
+                    "TOO_LATE_CANCEL",
+                    "too late to cancel"
+            );
+        }
+
         private static byte[] readFrame(Socket socket) throws IOException {
             DataInputStream input = new DataInputStream(socket.getInputStream());
             byte[] lengthHeader = input.readNBytes(8);
+            if (lengthHeader.length == 0) {
+                return null;
+            }
+            if (lengthHeader.length < 8) {
+                throw new IOException("socket closed before length header was fully read");
+            }
             int payloadLength = Integer.parseInt(new String(lengthHeader, StandardCharsets.US_ASCII));
             byte[] payload = input.readNBytes(payloadLength);
+            if (payload.length < payloadLength) {
+                throw new IOException("socket closed before payload was fully read");
+            }
             ByteArrayOutputStream frame = new ByteArrayOutputStream();
             frame.write(lengthHeader);
             frame.write(payload);
@@ -389,6 +588,11 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
                 clientSocket.close();
             }
             serverSocket.close();
+        }
+
+        private enum CancelResponseMode {
+            ACK,
+            REJECT
         }
     }
 }

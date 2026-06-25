@@ -33,6 +33,9 @@ public class DefaultOrderStateMachine implements OrderStateMachine {
     }
 
     private Order acknowledge(Order current, OrderTransitionRequest request) {
+        if (current.status() == OrderStatus.PENDING_CANCEL) {
+            return current.withStatus(OrderStatus.PENDING_CANCEL, request.occurredAt());
+        }
         if (current.status() != OrderStatus.PENDING_ACK) {
             throw new InvalidOrderTransitionException(current.status(), request.trigger());
         }
@@ -40,7 +43,7 @@ public class DefaultOrderStateMachine implements OrderStateMachine {
     }
 
     private Order reject(Order current, OrderTransitionRequest request) {
-        if (current.status() != OrderStatus.PENDING_ACK) {
+        if (current.status() != OrderStatus.PENDING_ACK && current.status() != OrderStatus.PENDING_CANCEL) {
             throw new InvalidOrderTransitionException(current.status(), request.trigger());
         }
         return current.withStatus(OrderStatus.REJECTED, request.occurredAt());

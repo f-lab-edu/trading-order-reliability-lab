@@ -3,6 +3,7 @@ package com.trading.orderreliability.gateway.messaging.command;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trading.orderreliability.common.id.UuidV7Generator;
+import com.trading.orderreliability.common.messaging.BrokerCommandPayloads.CancelOrderCommandPayload;
 import com.trading.orderreliability.common.messaging.BrokerCommandPayloads.SubmitOrderCommandPayload;
 import com.trading.orderreliability.common.messaging.MessageEnvelope;
 import com.trading.orderreliability.common.messaging.MessageTypes;
@@ -56,19 +57,26 @@ public class BrokerCommandService {
             return BrokerCommandHandlingResult.DUPLICATE_SKIPPED;
         }
 
-        if (!MessageTypes.SUBMIT_ORDER_COMMAND.equals(envelope.messageType())) {
-            repository.parkMessage(
-                    uuidGenerator.generate(),
-                    MessagingTopics.BROKER_COMMAND,
-                    CONSUMER_NAME,
-                    envelope,
-                    "UNSUPPORTED_COMMAND",
-                    "Broker Gateway currently dispatches SubmitOrderCommand only",
-                    clock.instant()
-            );
-            return BrokerCommandHandlingResult.PARKED_UNSUPPORTED;
+        if (MessageTypes.SUBMIT_ORDER_COMMAND.equals(envelope.messageType())) {
+            return handleSubmit(envelope);
+        }
+        if (MessageTypes.CANCEL_ORDER_COMMAND.equals(envelope.messageType())) {
+            return handleCancel(envelope);
         }
 
+        repository.parkMessage(
+                uuidGenerator.generate(),
+                MessagingTopics.BROKER_COMMAND,
+                CONSUMER_NAME,
+                envelope,
+                "UNSUPPORTED_COMMAND",
+                "Broker Gateway currently dispatches SubmitOrderCommand and CancelOrderCommand only",
+                clock.instant()
+        );
+        return BrokerCommandHandlingResult.PARKED_UNSUPPORTED;
+    }
+
+    private BrokerCommandHandlingResult handleSubmit(MessageEnvelope<JsonNode> envelope) {
         SubmitOrderCommandPayload payload = objectMapper.convertValue(envelope.payload(), SubmitOrderCommandPayload.class);
         Instant now = clock.instant();
         UUID attemptId = uuidGenerator.generate();
@@ -85,6 +93,28 @@ public class BrokerCommandService {
                 now
         );
         log.debug("SubmitOrderCommand stored for broker dispatch: orderId={}, wireMessageId={}",
+                payload.orderId(),
+                wireMessageId);
+        return BrokerCommandHandlingResult.HANDLED;
+    }
+
+    private BrokerCommandHandlingResult handleCancel(MessageEnvelope<JsonNode> envelope) {
+        CancelOrderCommandPayload payload = objectMapper.convertValue(envelope.payload(), CancelOrderCommandPayload.class);
+        Instant now = clock.instant();
+        UUID attemptId = uuidGenerator.generate();
+        String wireMessageId = wireMessageId();
+        repository.insertOrKeepBinding(uuidGenerator.generate(), payload.orderId(), properties.getCode(), now);
+        repository.insertCancelAttempt(
+                attemptId,
+                envelope.messageId(),
+                payload.orderId(),
+                properties.getCode(),
+                wireMessageId,
+                envelope.traceId(),
+                payload,
+                now
+        );
+        log.debug("CancelOrderCommand stored for broker dispatch: orderId={}, wireMessageId={}",
                 payload.orderId(),
                 wireMessageId);
         return BrokerCommandHandlingResult.HANDLED;

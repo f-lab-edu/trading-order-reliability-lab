@@ -5,6 +5,9 @@ import com.trading.orderreliability.broker.protocol.BrokerFrameCodec;
 import com.trading.orderreliability.broker.protocol.BrokerMalformedType;
 import com.trading.orderreliability.broker.protocol.BrokerMessage;
 import com.trading.orderreliability.broker.protocol.BrokerMessageId;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelAccepted;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelRejected;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelRequest;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderAccepted;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderRejected;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderRequest;
@@ -34,6 +37,8 @@ public class BrokerSimulatorTcpHandler extends SimpleChannelInboundHandler<Objec
     private static final Logger log = LoggerFactory.getLogger(BrokerSimulatorTcpHandler.class);
     private static final String DEFAULT_REJECT_CODE = "MARKET_CLOSED";
     private static final String DEFAULT_REJECT_REASON = "scenario configured to reject order";
+    private static final String DEFAULT_CANCEL_REJECT_CODE = "TOO_LATE_CANCEL";
+    private static final String DEFAULT_CANCEL_REJECT_REASON = "scenario configured to reject cancel";
 
     private final BrokerFrameCodec codec = new BrokerFrameCodec();
     private final BrokerSimulatorState state;
@@ -72,6 +77,8 @@ public class BrokerSimulatorTcpHandler extends SimpleChannelInboundHandler<Objec
         BrokerMessage message = success.message();
         if (message instanceof OrderRequest orderRequest) {
             handleOrderRequest(context, orderRequest);
+        } else if (message instanceof CancelRequest cancelRequest) {
+            handleCancelRequest(context, cancelRequest);
         } else if (message instanceof StatusQuery statusQuery) {
             handleStatusQuery(context, statusQuery);
         }
@@ -102,6 +109,28 @@ public class BrokerSimulatorTcpHandler extends SimpleChannelInboundHandler<Objec
                 Instant.now()
         );
         sessions.register(accepted.orderId(), context.channel());
+        write(context, response);
+    }
+
+    private void handleCancelRequest(ChannelHandlerContext context, CancelRequest request) {
+        if (state.scenario() == SimulatorScenario.CANCEL_REJECT_SUCCESS) {
+            SimulatorOrder order = state.rejectCancel(request.header().orderId(), request.brokerOrderId());
+            CancelRejected response = new CancelRejected(
+                    responseHeader(BrokerMessageId.CXLR, request.header()),
+                    order.brokerOrderId(),
+                    DEFAULT_CANCEL_REJECT_CODE,
+                    DEFAULT_CANCEL_REJECT_REASON
+            );
+            write(context, response);
+            return;
+        }
+
+        SimulatorOrder order = state.cancel(request.header().orderId(), request.brokerOrderId());
+        CancelAccepted response = new CancelAccepted(
+                responseHeader(BrokerMessageId.CXLA, request.header()),
+                order.brokerOrderId(),
+                Instant.now()
+        );
         write(context, response);
     }
 
@@ -150,6 +179,9 @@ public class BrokerSimulatorTcpHandler extends SimpleChannelInboundHandler<Objec
         }
         if (order.status() == SimulatorOrderStatus.FILLED) {
             return "FILLED";
+        }
+        if (order.status() == SimulatorOrderStatus.CANCELED) {
+            return "CANCELED";
         }
         return "ACCEPTED";
     }

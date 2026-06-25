@@ -4,6 +4,9 @@ import com.trading.orderreliability.broker.protocol.BrokerCommonHeader;
 import com.trading.orderreliability.broker.protocol.BrokerFrameCodec;
 import com.trading.orderreliability.broker.protocol.BrokerMessage;
 import com.trading.orderreliability.broker.protocol.BrokerMessageId;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelAccepted;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelRejected;
+import com.trading.orderreliability.broker.protocol.BrokerMessages.CancelRequest;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.Fill;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderAccepted;
 import com.trading.orderreliability.broker.protocol.BrokerMessages.OrderRejected;
@@ -157,6 +160,49 @@ class BrokerSimulatorTcpIntegrationTest {
     }
 
     @Test
+    @DisplayName("CANCEL_ACK_SUCCESS 시나리오는 취소 요청에 CXLA 취소 완료 응답을 반환한다")
+    void cancelRequestReturnsCancelAckWhenScenarioIsCancelAckSuccess() throws Exception {
+        putScenario(SimulatorScenario.CANCEL_ACK_SUCCESS);
+
+        try (Socket socket = connect()) {
+            send(socket, orderRequest("W-GW-ORDER-CANCEL-ACK-001"));
+            OrderAccepted accepted = (OrderAccepted) receive(socket);
+
+            send(socket, cancelRequest("W-GW-CANCEL-ACK-001", accepted.brokerOrderId()));
+
+            BrokerMessage cancelAck = receive(socket);
+            assertThat(cancelAck).isInstanceOf(CancelAccepted.class);
+            CancelAccepted cancelAccepted = (CancelAccepted) cancelAck;
+            assertThat(cancelAccepted.header().wireMessageId()).isEqualTo("W-GW-CANCEL-ACK-001");
+            assertThat(cancelAccepted.brokerOrderId()).isEqualTo(accepted.brokerOrderId());
+
+            send(socket, statusQuery("W-GW-STATUS-CANCELED-001", accepted.brokerOrderId()));
+            StatusSnapshot snapshot = (StatusSnapshot) receive(socket);
+            assertThat(snapshot.snapshotStatus()).isEqualTo("CANCELED");
+        }
+    }
+
+    @Test
+    @DisplayName("CANCEL_REJECT_SUCCESS 시나리오는 취소 요청에 CXLR 취소 거절 응답을 반환한다")
+    void cancelRequestReturnsCancelRejectWhenScenarioIsCancelRejectSuccess() throws Exception {
+        putScenario(SimulatorScenario.CANCEL_REJECT_SUCCESS);
+
+        try (Socket socket = connect()) {
+            send(socket, orderRequest("W-GW-ORDER-CANCEL-REJECT-001"));
+            OrderAccepted accepted = (OrderAccepted) receive(socket);
+
+            send(socket, cancelRequest("W-GW-CANCEL-REJECT-001", accepted.brokerOrderId()));
+
+            BrokerMessage cancelReject = receive(socket);
+            assertThat(cancelReject).isInstanceOf(CancelRejected.class);
+            CancelRejected cancelRejected = (CancelRejected) cancelReject;
+            assertThat(cancelRejected.header().wireMessageId()).isEqualTo("W-GW-CANCEL-REJECT-001");
+            assertThat(cancelRejected.brokerOrderId()).isEqualTo(accepted.brokerOrderId());
+            assertThat(cancelRejected.rejectCode()).isEqualTo("TOO_LATE_CANCEL");
+        }
+    }
+
+    @Test
     @DisplayName("잘못된 길이 헤더를 받으면 주문 상태를 바꾸지 않고 연결을 닫는다")
     void malformedLengthHeaderClosesConnection() throws Exception {
         try (Socket socket = connect()) {
@@ -278,6 +324,13 @@ class BrokerSimulatorTcpIntegrationTest {
                 ATTEMPT_ID,
                 brokerOrderId,
                 "MANUAL"
+        );
+    }
+
+    private CancelRequest cancelRequest(String wireMessageId, String brokerOrderId) {
+        return new CancelRequest(
+                header(BrokerMessageId.CXLQ, wireMessageId),
+                brokerOrderId
         );
     }
 
