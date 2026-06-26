@@ -19,13 +19,13 @@
 | 항목 | 값 |
 | --- | --- |
 | 마지막 갱신 | 2026-06-26 |
-| 현재 active milestone | `M5.5` Dispatch fencing hardening 구현 완료, 최종 정리 단계 |
+| 현재 active milestone | `M6` 부분체결 후 취소와 경합 착수 대기 |
 | M2 상태 | 완료된 기반으로 취급 |
 | M3 상태 | 완료 |
 | M4 상태 | 완료 |
-| 다음 권장 작업 | M5.5 변경 atomic commit 후 M6 설계문서 확인 |
-| 최신 완료 milestone 작업 로그 | `local-notes/ai-work-log/2026-06-17-M5.md` |
-| 최신 진행 milestone 작업 로그 | `local-notes/ai-work-log/2026-06-26-M5.5.md` |
+| 다음 권장 작업 | M6 설계문서 확인 후 부분체결 후 취소와 cancel/fill race matrix 계획 수립 |
+| 최신 완료 milestone 작업 로그 | `local-notes/ai-work-log/2026-06-26-M5.5.md` |
+| 최신 진행 milestone 작업 로그 | 해당 없음 (`M6` 착수 대기) |
 | 최신 전체 검증 | 2026-06-26 `./gradlew --gradle-user-home .gradle test --rerun-tasks` 성공 |
 
 ---
@@ -40,7 +40,7 @@
 | `M3` Broker protocol과 Simulator | 완료 | broker-protocol codec, malformed 분류, Broker Simulator TCP server/admin API, ACK/RJCT/OSTS/duplicate fill 검증 구현, 문서화와 커밋 완료 |
 | `M4` 정상 주문 end-to-end | 완료 | SubmitOrderCommand -> Gateway ORDR -> ACKN/RJCT/FILL canonical broker event -> Order Service 상태 반영 -> 최소 SSE까지 구현. 구현 커밋 `dddb734`, 설계 정합성 보정 커밋 `03a5f9d`, completion docs/tag workflow로 종료 |
 | `M5` 기본 취소 흐름 | 완료 | `LIVE`/`PENDING_ACK` 주문 취소 요청, Gateway `CancelOrderCommand` durable attempt, `CXLQ`, `CXLA`/`CXLR`, Order Service cancel ACK/Reject 반영 구현. V1-V3 검증 루프와 full Gradle test 완료 |
-| `M5.5` Dispatch fencing hardening | 구현 완료, 최종 정리 단계 | M6 착수 전 특별 편성. Gateway command attempt에 dispatch token/owner/lock을 도입하고 `ack_deadline_at`을 broker 응답 deadline 의미로 축소. V1-V3+closure 검증 루프와 full Gradle test 성공, commit/tag는 아직 수행하지 않음 |
+| `M5.5` Dispatch fencing hardening | 완료 | M6 착수 전 특별 편성. Gateway command attempt에 dispatch token/owner/lock을 도입하고 `ack_deadline_at`을 broker 응답 deadline 의미로 축소. OUT journal unique, stale dispatcher fencing, submit/cancel UNKNOWN 식별, scheduler 리팩토링을 구현 커밋 `9049a37`에 포함했고 V1-V3+closure 검증 루프와 focused/full Gradle test 성공 후 완료 처리 |
 | `M6` 부분체결 후 취소와 경합 | 착수 대기 | M5 완료 기준선 위에서 부분체결 후 취소, 취소 중 추가 체결, 수량 기준 cancel/fill race matrix 설계 확인 필요 |
 
 상태 표현 기준:
@@ -79,6 +79,7 @@ M5.5 범위는 M5 완료 후 특별 편성한 Broker Gateway dispatch fencing ha
 * 2026-06-26 `./gradlew --gradle-user-home .gradle :apps:broker-gateway-service:test --tests com.trading.orderreliability.gateway.application.BrokerGatewayCommandDispatchIntegrationTest`
 * 2026-06-26 `./gradlew --gradle-user-home .gradle :apps:broker-gateway-service:test --tests com.trading.orderreliability.gateway.messaging.command.BrokerCommandServiceIntegrationTest --tests com.trading.orderreliability.gateway.application.BrokerGatewayCommandDispatchIntegrationTest`
 * 2026-06-26 `git diff --check`
+* 2026-06-26 `./gradlew --gradle-user-home .gradle :apps:broker-gateway-service:test --tests com.trading.orderreliability.gateway.messaging.command.BrokerCommandServiceIntegrationTest --tests com.trading.orderreliability.gateway.application.BrokerGatewayCommandDispatchIntegrationTest --tests com.trading.orderreliability.gateway.application.BrokerGatewayInboundServiceIntegrationTest`
 * 2026-06-26 `./gradlew --gradle-user-home .gradle test --rerun-tasks`
 
 M5.5에서 의도적으로 아직 하지 않는 것:
