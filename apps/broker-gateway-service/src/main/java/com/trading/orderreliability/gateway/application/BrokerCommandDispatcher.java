@@ -66,32 +66,33 @@ public class BrokerCommandDispatcher {
                 new BigDecimal(payload.limitPrice())
         );
         byte[] frame = codec.encode(request);
+        if (!repository.insertOutboundJournalIfDispatchTokenMatches(
+                attempt.id(),
+                attempt.dispatchToken(),
+                uuidGenerator.generate(),
+                attempt.brokerCode(),
+                BrokerMessageId.ORDR.code(),
+                attempt.wireMessageId(),
+                attempt.traceId(),
+                null,
+                payload.orderId(),
+                frame,
+                request,
+                now
+        )) {
+            throw new IllegalStateException("Broker submit attempt dispatch token is no longer current: "
+                    + attempt.id());
+        }
+        ensureDispatchTokenIsCurrent(attempt, "submit", clock.instant());
         try {
-            repository.insertJournal(
-                    uuidGenerator.generate(),
-                    attempt.brokerCode(),
-                    "OUT",
-                    BrokerMessageId.ORDR.code(),
-                    attempt.wireMessageId(),
-                    attempt.traceId(),
-                    null,
-                    payload.orderId(),
-                    "PARSED",
-                    null,
-                    null,
-                    frame,
-                    request,
-                    null,
-                    now
-            );
             tcpClient.send(frame);
         } catch (Exception e) {
-            repository.markAttemptFailed(attempt.id(), "TCP_SEND_FAILED", e.getMessage(), clock.instant());
             throw e;
         }
         Instant sentAt = clock.instant();
         if (!repository.markAttemptSent(
                 attempt.id(),
+                attempt.dispatchToken(),
                 sentAt,
                 sentAt.plusMillis(properties.getCommandAckTimeoutMs())
         ) && !repository.attemptStateIs(attempt.id(), "ACKED")) {
@@ -114,32 +115,33 @@ public class BrokerCommandDispatcher {
                 attempt.brokerOrderId()
         );
         byte[] frame = codec.encode(request);
+        if (!repository.insertOutboundJournalIfDispatchTokenMatches(
+                attempt.id(),
+                attempt.dispatchToken(),
+                uuidGenerator.generate(),
+                attempt.brokerCode(),
+                BrokerMessageId.CXLQ.code(),
+                attempt.wireMessageId(),
+                attempt.traceId(),
+                attempt.brokerOrderId(),
+                payload.orderId(),
+                frame,
+                request,
+                now
+        )) {
+            throw new IllegalStateException("Broker cancel attempt dispatch token is no longer current: "
+                    + attempt.id());
+        }
+        ensureDispatchTokenIsCurrent(attempt, "cancel", clock.instant());
         try {
-            repository.insertJournal(
-                    uuidGenerator.generate(),
-                    attempt.brokerCode(),
-                    "OUT",
-                    BrokerMessageId.CXLQ.code(),
-                    attempt.wireMessageId(),
-                    attempt.traceId(),
-                    attempt.brokerOrderId(),
-                    payload.orderId(),
-                    "PARSED",
-                    null,
-                    null,
-                    frame,
-                    request,
-                    null,
-                    now
-            );
             tcpClient.send(frame);
         } catch (Exception e) {
-            repository.markAttemptFailed(attempt.id(), "TCP_SEND_FAILED", e.getMessage(), clock.instant());
             throw e;
         }
         Instant sentAt = clock.instant();
         if (!repository.markAttemptSent(
                 attempt.id(),
+                attempt.dispatchToken(),
                 sentAt,
                 sentAt.plusMillis(properties.getCommandAckTimeoutMs())
         ) && !repository.attemptStateIs(attempt.id(), "ACKED")) {
@@ -152,7 +154,13 @@ public class BrokerCommandDispatcher {
         try {
             return objectMapper.readValue(attempt.payloadJson(), SubmitOrderCommandPayload.class);
         } catch (Exception e) {
-            repository.markAttemptFailed(attempt.id(), "PAYLOAD_DESERIALIZE_FAILED", e.getMessage(), clock.instant());
+            repository.markAttemptFailed(
+                    attempt.id(),
+                    attempt.dispatchToken(),
+                    "PAYLOAD_DESERIALIZE_FAILED",
+                    e.getMessage(),
+                    clock.instant()
+            );
             throw new IllegalStateException("Failed to deserialize broker command attempt payload: " + attempt.id(), e);
         }
     }
@@ -161,8 +169,25 @@ public class BrokerCommandDispatcher {
         try {
             return objectMapper.readValue(attempt.payloadJson(), CancelOrderCommandPayload.class);
         } catch (Exception e) {
-            repository.markAttemptFailed(attempt.id(), "PAYLOAD_DESERIALIZE_FAILED", e.getMessage(), clock.instant());
+            repository.markAttemptFailed(
+                    attempt.id(),
+                    attempt.dispatchToken(),
+                    "PAYLOAD_DESERIALIZE_FAILED",
+                    e.getMessage(),
+                    clock.instant()
+            );
             throw new IllegalStateException("Failed to deserialize broker cancel attempt payload: " + attempt.id(), e);
+        }
+    }
+
+    private void ensureDispatchTokenIsCurrent(
+            GatewayCommandAttemptRecord attempt,
+            String commandType,
+            Instant checkedAt
+    ) {
+        if (!repository.dispatchTokenIsCurrent(attempt.id(), attempt.dispatchToken(), checkedAt)) {
+            throw new IllegalStateException("Broker " + commandType
+                    + " attempt dispatch token is no longer current before TCP send: " + attempt.id());
         }
     }
 

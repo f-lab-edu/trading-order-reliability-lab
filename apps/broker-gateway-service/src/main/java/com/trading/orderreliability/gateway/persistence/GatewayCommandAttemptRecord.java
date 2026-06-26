@@ -13,6 +13,26 @@ public record GatewayCommandAttemptRecord(
         String traceId,
         String brokerOrderId,
         String payloadJson,
+        String dispatchToken,
+        String dispatchOwner,
+        Instant dispatchLockedUntil,
         Instant createdAt
 ) {
+    GatewayCommandAttemptRecord withDispatchLock(String dispatchToken, String dispatchOwner, Instant dispatchLockedUntil) {
+        return new GatewayCommandAttemptRecord(
+                id,
+                sourceMessageId,
+                orderId,
+                commandType,
+                brokerCode,
+                wireMessageId,
+                traceId,
+                brokerOrderId,
+                payloadJson,
+                dispatchToken,
+                dispatchOwner,
+                dispatchLockedUntil,
+                createdAt
+        );
+    }
 }

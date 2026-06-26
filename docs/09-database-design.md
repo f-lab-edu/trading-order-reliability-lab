@@ -700,7 +700,10 @@ Gateway가 브로커에 command 전문을 보낸 시도 이력이다.
 | `broker_order_id`   | `VARCHAR(64)`  |    Y | 브로커 주문 ID                          |
 | `transport_state`   | `VARCHAR(32)`  |    N | 전송 상태                              |
 | `sent_at`           | `DATETIME(3)`  |    Y | 전송 시각                              |
-| `ack_deadline_at`   | `DATETIME(3)`  |    Y | 응답 deadline                        |
+| `ack_deadline_at`   | `DATETIME(3)`  |    Y | `SENT` 이후 브로커 응답 deadline         |
+| `dispatch_token`    | `VARCHAR(64)`  |    Y | dispatch claim fencing token        |
+| `dispatch_owner`    | `VARCHAR(128)` |    Y | dispatch worker/instance 식별자        |
+| `dispatch_locked_until` | `DATETIME(3)` |  Y | dispatch claim lease 만료 시각         |
 | `completed_at`      | `DATETIME(3)`  |    Y | 완료 시각                              |
 | `error_code`        | `VARCHAR(64)`  |    Y | 오류 코드                              |
 | `error_message`     | `VARCHAR(512)` |    Y | 오류 메시지                             |
@@ -715,6 +718,7 @@ Gateway가 브로커에 command 전문을 보낸 시도 이력이다.
 | UK  | `broker_code, wire_message_id`       | 전문 단위 correlation |
 | IDX | `order_id, command_type, created_at` | 주문별 command 추적    |
 | IDX | `transport_state, ack_deadline_at`   | timeout 대상 조회     |
+| IDX | `transport_state, dispatch_locked_until` | dispatch lock 만료/재claim 조회 |
 | IDX | `source_message_id`                  | 원천 메시지 추적         |
 
 ### 상태 값
@@ -734,11 +738,19 @@ Gateway가 브로커에 command 전문을 보낸 시도 이력이다.
 * `FAILED`
 * `UNKNOWN`
 
+`TIMED_OUT`은 장기 status query/report 계열 또는 legacy 분석을 위해 남겨둔 상태 값이다.
+M5.5 기준 pending submit/cancel command 결과 timeout은 직접 재송신하지 않고 `UNKNOWN`으로 기록한다.
+
 ### 설계 메모
 
 * `SENT`는 TCP write 완료를 의미하지, 브로커 업무 접수를 의미하지 않는다.
 * 브로커 업무 접수는 `ACKN` 등 별도 전문으로 판단한다.
-* command timeout 발생 시 `BrokerCommandOutcomeUnknown` 이벤트 발행 대상이 된다.
+* `CREATED` 상태의 worker lease는 `dispatch_token`, `dispatch_owner`, `dispatch_locked_until`으로 표현한다.
+* `ack_deadline_at`은 `SENT` 이후 broker response deadline으로만 사용한다. `CREATED` claim lease 판단에는 사용하지 않는다.
+* OUT journal insert와 TCP send 직전 검증은 현재 `dispatch_token`과 `dispatch_locked_until`이 유효할 때만 통과한다.
+* OUT journal이 남은 attempt는 broker 도달 여부가 불확실하므로 같은 `wireMessageId`로 직접 재송신하지 않는다.
+* `broker_message_journal`의 OUT 전용 unique 제약은 같은 broker/msg/wire OUT 기록 중복을 DB에서 한 번 더 방어한다.
+* command outcome unknown을 canonical broker event로 Order Service에 전달하는 흐름은 M7/M8 범위다. M5.5 구현은 Gateway attempt `UNKNOWN`/parking까지 다룬다.
 
 ---
 
@@ -764,6 +776,8 @@ TCP 전문 송수신 원문과 파싱 결과를 저장한다.
 | `raw_message`         | `TEXT`         |    N | 원문 전문               |
 | `parsed_payload_json` | `JSON`         |    Y | 파싱된 payload         |
 | `payload_hash`        | `CHAR(64)`     |    Y | payload hash        |
+| `out_msg_id`          | `VARCHAR(16)`  |    Y | OUT unique 전용 generated msgId |
+| `out_wire_message_id` | `VARCHAR(64)`  |    Y | OUT unique 전용 generated wireMessageId |
 | `recorded_at`         | `DATETIME(3)`  |    N | 기록 시각               |
 
 ### 주요 인덱스
@@ -777,6 +791,7 @@ TCP 전문 송수신 원문과 파싱 결과를 저장한다.
 | IDX | `broker_order_id, recorded_at` | brokerOrderId 기반 조회 |
 | IDX | `order_id, recorded_at`        | 주문별 전문 이력           |
 | IDX | `parse_status, recorded_at`    | malformed 분석        |
+| UK  | `broker_code, out_msg_id, out_wire_message_id` | OUT 전문 중복 기록 방지 |
 
 ### 상태 값
 
@@ -801,6 +816,7 @@ TCP 전문 송수신 원문과 파싱 결과를 저장한다.
 * 원문 전문에 민감 정보가 들어가지 않도록 전문 설계 단계에서 통제한다.
 * Gateway는 이 테이블을 통해 전문 송수신과 파싱 오류를 추적한다.
 * 브로커 이벤트가 실제 주문 상태에 적용되었는지는 Order Service의 `order_event`에서 판단한다.
+* `out_msg_id`, `out_wire_message_id`는 `direction = 'OUT'`일 때만 값을 갖는 generated column이다. MySQL unique key는 NULL 중복을 허용하므로 IN journal은 동일 broker/msg/wire 중복 수신 이력을 계속 저장할 수 있다.
 
 ---
 

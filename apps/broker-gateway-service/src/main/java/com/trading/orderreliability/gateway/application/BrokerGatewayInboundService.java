@@ -70,10 +70,9 @@ public class BrokerGatewayInboundService {
         BrokerParseResult.Success success = (BrokerParseResult.Success) parseResult;
         BrokerMessage message = success.message();
         BrokerCommonHeader header = message.header();
-        repository.insertJournal(
+        repository.insertInboundJournal(
                 uuidGenerator.generate(),
                 properties.getCode(),
-                "IN",
                 header.messageId().code(),
                 header.wireMessageId(),
                 header.traceId(),
@@ -168,8 +167,20 @@ public class BrokerGatewayInboundService {
             byte[] frame,
             Instant now
     ) {
-        if (!repository.submitAttemptMatches(properties.getCode(), header.wireMessageId(), header.orderId())) {
+        Optional<String> responseState = repository.findSubmitAttemptResponseState(
+                properties.getCode(),
+                header.wireMessageId(),
+                header.orderId()
+        );
+        if (responseState.isEmpty()) {
             parkInboundFrame(ERROR_CODE_ATTEMPT_MISMATCH, "RJCT does not match a known submit attempt", frame, now);
+            return;
+        }
+        if (RESPONSE_STATE_ACKED.equals(responseState.get())) {
+            return;
+        }
+        if (!RESPONSE_STATE_ELIGIBLE.equals(responseState.get())) {
+            parkInboundFrame(ERROR_CODE_ATTEMPT_MISMATCH, "RJCT does not match an active submit attempt", frame, now);
             return;
         }
         if (!repository.markAttemptAcked(properties.getCode(), header.wireMessageId(), null, now)) {
@@ -334,10 +345,9 @@ public class BrokerGatewayInboundService {
             byte[] frame,
             Instant recordedAt
     ) {
-        repository.insertJournal(
+        repository.insertInboundJournal(
                 uuidGenerator.generate(),
                 properties.getCode(),
-                "IN",
                 null,
                 null,
                 null,

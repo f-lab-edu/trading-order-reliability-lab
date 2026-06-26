@@ -344,7 +344,11 @@ sequenceDiagram
 
     MB->>BG: 주문 전송 명령 전달
     BG->>BG: 브로커 binding 생성
+    BG->>BG: SUBMIT attempt 저장 및 dispatch token claim
+    BG->>BG: OUT ORDR journal 기록
+    BG->>BG: token/lock 재확인
     BG->>B: ORDR 전문 전송(orderId 포함)
+    BG->>BG: attempt SENT 및 ack deadline 설정
     B-->>BG: ACKN 전문 응답
     BG->>BG: 브로커 주문 ID 기록
     BG->>MB: 주문 접수 이벤트 발행
@@ -357,8 +361,9 @@ sequenceDiagram
 
 ### 설명
 
-사용자가 주문을 생성하면 Order Service는 `PLACE` instruction을 접수하고 주문을 `PENDING_ACK` 상태로 생성한다.  
-브로커 전송은 Broker Gateway가 담당한다. Gateway는 브로커 전문에 `orderId`를 포함해 전송하고, 브로커 ACK를 canonical event로 변환한다.  
+사용자가 주문을 생성하면 Order Service는 `PLACE` instruction을 접수하고 주문을 `PENDING_ACK` 상태로 생성한다.
+브로커 전송은 Broker Gateway가 담당한다. Gateway는 브로커 전문에 `orderId`를 포함해 전송하고, 브로커 ACK를 canonical event로 변환한다.
+Gateway dispatch는 DB transaction 밖에서 수행되지만, command attempt claim, OUT journal, TCP send 직전 검증은 `dispatch_token`과 `dispatch_locked_until`으로 fencing한다.
 Order Service는 canonical event를 적용해 주문 상태를 `LIVE`로 변경하고 `PLACE` instruction을 완료 처리한다.
 
 ---
@@ -385,7 +390,12 @@ sequenceDiagram
     OS->>MB: 취소 명령 발행
 
     MB->>BG: 취소 명령 전달
+    BG->>BG: accepted binding 확인
+    BG->>BG: CANCEL attempt dispatch token claim
+    BG->>BG: OUT CXLQ journal 기록
+    BG->>BG: token/lock 재확인
     BG->>B: CXLQ 전문 전송(orderId 포함)
+    BG->>BG: attempt SENT 및 ack deadline 설정
     B-->>BG: CXLA 전문 응답
     BG->>MB: 취소 완료 이벤트 발행
 
@@ -398,12 +408,15 @@ sequenceDiagram
 ### 설명
 
 부분체결 후 취소 요청은 체결분을 취소하지 않는다.  
-Order Service는 미체결 잔량에 대한 `CANCEL` instruction을 생성하고 주문을 `PENDING_CANCEL`로 전환한다.  
+Order Service는 미체결 잔량에 대한 `CANCEL` instruction을 생성하고 주문을 `PENDING_CANCEL`로 전환한다.
+Gateway는 accepted `broker_order_binding`과 `brokerOrderId`가 확보된 cancel attempt만 `CXLQ` dispatch 후보로 본다.
 브로커 취소 완료 이벤트가 들어오면 주문을 `CANCELED`로 종결하고 `CANCEL` instruction을 완료 처리한다.
 
 ---
 
 ## 7.6.3 응답 timeout 후 UNKNOWN 및 reconciliation 흐름
+
+이 흐름은 M7/M8 목표 아키텍처다. M5.5 기준 구현은 Gateway 내부 attempt `UNKNOWN`/parking과 직접 재송신 금지까지 다루며, canonical unknown event 발행과 Order Service `UNKNOWN` 전환은 M7/M8 범위다.
 
 ```mermaid
 sequenceDiagram
@@ -420,6 +433,7 @@ sequenceDiagram
 
     Note over BG,B: 정해진 시간 안에 유효한 응답 없음
 
+    BG->>BG: command attempt UNKNOWN 기록
     BG->>MB: 결과 불확실 이벤트 발행
     MB->>OS: 결과 불확실 이벤트 전달
     OS->>OS: UNKNOWN + reconciliation PENDING 반영

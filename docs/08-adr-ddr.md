@@ -61,6 +61,7 @@
 | `DDR-010` | 식별 불가능한 malformed 전문은 주문 상태를 직접 변경하지 않는다                       | Accepted |
 | `DDR-011` | `NOT_FOUND` reconciliation 결과는 자동 종결하지 않는다                     | Accepted |
 | `DDR-012` | Reconciliation 실패는 workflow failure와 domain resolution failure로 분리한다 | Accepted |
+| `DDR-013` | Gateway command dispatch는 token/owner/lock으로 fencing하고 broker response deadline과 분리한다 | Accepted |
 
 ---
 
@@ -1161,6 +1162,70 @@ Recovery Service는 이를 수신해 reconciliation job을 `FAILED`로 종료한
 
 ---
 
+## DDR-013. Gateway command dispatch는 token/owner/lock으로 fencing하고 broker response deadline과 분리한다
+
+### Status
+
+Accepted
+
+### Context
+
+Broker Gateway는 Kafka command를 소비한 뒤 `broker_command_attempt`를 저장하고 DB transaction 밖에서 TCP 전문을 송신한다.
+
+M5 완료 시점의 구현은 `ack_deadline_at`을 `CREATED` attempt의 worker claim fence와 `SENT` attempt의 broker response deadline으로 함께 사용했다. 이 방식은 기본 흐름에는 충분했지만, 다중 Gateway 인스턴스가 같은 attempt를 claim하거나 lock 만료 후 이전 worker가 늦게 복귀하는 상황을 설명하기 어렵다.
+
+또한 claim 후 OUT journal 전 crash는 재claim 가능하지만, OUT journal 이후 crash는 TCP 송신 성공 여부가 불확실하므로 같은 `wireMessageId`를 직접 재송신하면 중복 주문/취소 위험이 생긴다.
+
+### Decision
+
+`broker_command_attempt`에 다음 dispatch lease 컬럼을 둔다.
+
+| 컬럼 | 의미 |
+|---|---|
+| `dispatch_token` | 한 번의 dispatch claim을 식별하는 fencing token |
+| `dispatch_owner` | claim한 Gateway worker/instance 추적값 |
+| `dispatch_locked_until` | `CREATED` attempt의 dispatch claim lease 만료 시각 |
+
+`ack_deadline_at`은 `SENT` 이후 broker response deadline으로만 사용한다.
+
+Gateway dispatch 정책:
+
+1. `CREATED` submit/cancel attempt claim 시 token/owner/lock을 설정한다.
+2. OUT journal insert는 현재 token이 일치하고 lock이 남아 있을 때만 성공한다.
+3. TCP send 직전에도 token과 lock을 재확인한다.
+4. `markAttemptSent`와 `markAttemptFailed`는 token이 일치할 때만 성공한다.
+5. OUT journal이 이미 남은 attempt는 같은 `wireMessageId`로 직접 재송신하지 않는다.
+6. M5.5에서는 Gateway attempt `UNKNOWN`/parking까지만 처리하고, canonical unknown event와 Order Service `UNKNOWN` 수렴은 M7/M8에서 구현한다.
+
+`broker_message_journal`에는 OUT 전용 unique 제약을 둔다. MySQL generated column `out_msg_id`, `out_wire_message_id`는 `direction = 'OUT'`일 때만 값을 갖고, unique key `(broker_code, out_msg_id, out_wire_message_id)`가 같은 broker/msg/wire 조합의 OUT journal 중복 저장을 거절한다. IN journal은 generated column이 NULL이므로 같은 `wireMessageId`의 중복 수신 이력을 계속 남길 수 있다.
+
+### Alternatives
+
+| 대안 | 장점 | 단점 | 결정 |
+|---|---|---|---|
+| `ack_deadline_at` 재사용 유지 | schema 변경 없음 | worker lease와 response timeout 의미가 계속 섞임 | 기각 |
+| `DISPATCHING` 상태 추가 | 상태로 dispatch 중임을 표현 가능 | transport state public 의미가 늘고 stale owner fencing token은 여전히 필요 | 기각 |
+| 별도 dispatch lease 테이블 | attempt lifecycle과 lease를 강하게 분리 | 현재 규모 대비 join/정합성 관리가 커짐 | 기각 |
+| attempt row에 token/owner/lock 추가 | 기존 lifecycle 안에서 ownership과 lease를 명시 | schema migration 필요 | 선택 |
+| OUT journal unique만 추가 | 동일 broker/msg/wire OUT journal 중복을 DB에서 막음 | stale owner의 `SENT`/`FAILED`/TCP send ownership은 막지 못함 | 부분 선택 |
+
+### Consequences
+
+장점:
+
+- worker lease와 broker response deadline의 의미가 분리된다.
+- stale worker의 `SENT`/`FAILED`/OUT journal/TCP send 부작용을 더 좁게 방어한다.
+- OUT journal은 DB unique 제약까지 적용되어 새 송신 경로가 생겨도 같은 broker/msg/wire OUT 기록을 중복 저장하지 않는다.
+- 운영자가 `dispatch_owner`와 `dispatch_locked_until`으로 stuck attempt를 추적할 수 있다.
+
+단점:
+
+- DB schema와 migration이 늘어난다.
+- DB row 변경과 외부 TCP write는 원자화할 수 없으므로 send 직전 재검증 이후의 짧은 TOCTOU는 남는다.
+- OUT unique는 journal 중복 저장만 막는다. stale worker ownership, TCP write 직전 race, outcome uncertainty는 token/lock과 UNKNOWN/reconciliation 정책으로 별도 방어해야 한다.
+
+---
+
 # 8.7 확정 사항 요약
 
 | 항목                 | 결정                                                                                                                  |
@@ -1184,3 +1249,4 @@ Recovery Service는 이를 수신해 reconciliation job을 `FAILED`로 종료한
 | 부분체결 후 취소          | 체결분 확정 + 미체결 잔량 취소                                                                                                  |
 | malformed 식별 불가 전문 | 주문 상태 직접 변경 금지                                                                                                      |
 | `NOT_FOUND`        | 자동 종결 금지                                                                                                            |
+| Gateway command dispatch | `dispatch_token`/`dispatch_owner`/`dispatch_locked_until`으로 worker lease를 fencing하고 `ack_deadline_at`은 `SENT` 이후 broker response deadline으로 사용 |

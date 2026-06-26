@@ -148,6 +148,46 @@ class BrokerGatewayInboundServiceIntegrationTest extends GatewayMySqlTestContain
     }
 
     @Test
+    @DisplayName("claim되지 않은 CREATED submit attempt의 ACKN은 binding과 outbox 없이 parking 된다")
+    void ackForUnclaimedCreatedSubmitAttemptIsParkedWithoutBindingOrOutbox() {
+        UUID orderId = UUID.randomUUID();
+        GatewayCommandAttemptRecord attempt = createUnclaimedSubmitAttempt(orderId);
+
+        inboundService.handleFrame(codec.encode(new OrderAccepted(
+                header(BrokerMessageId.ACKN, attempt.wireMessageId(), orderId),
+                "BRK-SIM-UNCLAIMED-ACK",
+                Instant.parse("2026-06-13T01:02:00Z")
+        )));
+
+        assertThat(repository.findOutboxByAggregateIdAndMessageType(
+                orderId,
+                MessageTypes.BROKER_ORDER_ACKNOWLEDGED
+        )).isEmpty();
+        assertThat(repository.findOrderIdByBrokerOrderId("SIM", "BRK-SIM-UNCLAIMED-ACK")).isEmpty();
+        assertThat(repository.countParkedByErrorCode("BROKER_EVENT_ATTEMPT_MISMATCH")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("claim되지 않은 CREATED submit attempt의 RJCT는 reject outbox 없이 parking 된다")
+    void rejectForUnclaimedCreatedSubmitAttemptIsParkedWithoutOutbox() {
+        UUID orderId = UUID.randomUUID();
+        GatewayCommandAttemptRecord attempt = createUnclaimedSubmitAttempt(orderId);
+
+        inboundService.handleFrame(codec.encode(new OrderRejected(
+                header(BrokerMessageId.RJCT, attempt.wireMessageId(), orderId),
+                "INVALID_PRICE",
+                "invalid price"
+        )));
+
+        assertThat(repository.findOutboxByAggregateIdAndMessageType(
+                orderId,
+                MessageTypes.BROKER_ORDER_REJECTED
+        )).isEmpty();
+        assertThat(repository.countAttemptsByOrderIdTypeAndState(orderId, "SUBMIT", "ACKED")).isZero();
+        assertThat(repository.countParkedByErrorCode("BROKER_EVENT_ATTEMPT_MISMATCH")).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("RJCT 수신은 BrokerOrderRejected outbox를 생성한다")
     void rejectCreatesRejectedOutbox() throws Exception {
         UUID orderId = UUID.randomUUID();
@@ -438,6 +478,20 @@ class BrokerGatewayInboundServiceIntegrationTest extends GatewayMySqlTestContain
     }
 
     private GatewayCommandAttemptRecord createSubmitAttempt(UUID orderId) {
+        createUnclaimedSubmitAttempt(orderId);
+        return repository.claimCreatedSubmitAttempts(
+                        10,
+                        Instant.parse("2026-06-13T01:00:30Z"),
+                        Instant.parse("2026-06-13T01:01:00Z"),
+                        "inbound-test-worker"
+                )
+                .stream()
+                .filter(attempt -> attempt.orderId().equals(orderId))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private GatewayCommandAttemptRecord createUnclaimedSubmitAttempt(UUID orderId) {
         commandService.handle(new MessageEnvelope<>(
                 UUID.randomUUID(),
                 MessageTypes.SUBMIT_ORDER_COMMAND,
@@ -477,7 +531,8 @@ class BrokerGatewayInboundServiceIntegrationTest extends GatewayMySqlTestContain
         return repository.claimDispatchableCancelAttempts(
                         10,
                         Instant.parse("2026-06-13T01:02:00Z"),
-                        Instant.parse("2026-06-13T01:02:30Z")
+                        Instant.parse("2026-06-13T01:02:30Z"),
+                        "inbound-test-worker"
                 )
                 .stream()
                 .filter(attempt -> attempt.orderId().equals(orderId))

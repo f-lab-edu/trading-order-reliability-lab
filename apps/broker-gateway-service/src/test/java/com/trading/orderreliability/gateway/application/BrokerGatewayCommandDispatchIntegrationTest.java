@@ -250,7 +250,7 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
     }
 
     @Test
-    @DisplayName("ack deadline이 지난 submit attempt는 재전송하지 않고 UNKNOWN과 parking으로 격리한다")
+    @DisplayName("OUT ORDR journal이 있는 CREATED submit attempt는 lock 만료 후 UNKNOWN과 parking으로 격리한다")
     @Sql(statements = {
             "DELETE FROM outbox_message",
             "DELETE FROM broker_message_journal",
@@ -259,14 +259,29 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
             "DELETE FROM processed_message",
             "DELETE FROM parked_message"
     })
-    void expiredSubmitAckDeadlineIsParkedAsUnknownWithoutResend() {
+    void createdSubmitAttemptWithOutboundJournalIsParkedAsUnknownAfterDispatchLockExpires() {
         UUID orderId = UUID.randomUUID();
         commandService.handle(submitEnvelope(orderId));
-        assertThat(repository.claimCreatedSubmitAttempts(
+        GatewayCommandAttemptRecord attempt = repository.claimCreatedSubmitAttempts(
                 10,
                 Instant.parse("2026-06-13T00:00:00Z"),
-                Instant.parse("2026-06-13T00:00:01Z")
-        )).hasSize(1);
+                Instant.parse("2026-06-13T00:00:01Z"),
+                "worker-a"
+        ).getFirst();
+        assertThat(repository.insertOutboundJournalIfDispatchTokenMatches(
+                attempt.id(),
+                attempt.dispatchToken(),
+                UUID.randomUUID(),
+                attempt.brokerCode(),
+                BrokerMessageId.ORDR.code(),
+                attempt.wireMessageId(),
+                attempt.traceId(),
+                null,
+                orderId,
+                "ordr".getBytes(StandardCharsets.US_ASCII),
+                objectMapper.createObjectNode().put("orderId", orderId.toString()),
+                Instant.parse("2026-06-13T00:00:00.500Z")
+        )).isTrue();
 
         dispatchScheduler.dispatchCreatedAttempts();
 
@@ -275,7 +290,7 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
     }
 
     @Test
-    @DisplayName("claim된 CREATED submit attempt는 ack deadline 전까지 dispatch 후보로 다시 조회되지 않는다")
+    @DisplayName("claim된 CREATED submit attempt는 dispatch lock 전까지 후보에서 숨겨지고 ack deadline은 설정하지 않는다")
     @Sql(statements = {
             "DELETE FROM outbox_message",
             "DELETE FROM broker_message_journal",
@@ -284,22 +299,29 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
             "DELETE FROM processed_message",
             "DELETE FROM parked_message"
     })
-    void claimedCreatedAttemptIsHiddenFromDispatchUntilAckDeadlineExpires() {
+    void claimedCreatedAttemptIsHiddenFromDispatchUntilLockExpiresWithoutAckDeadline() {
         UUID orderId = UUID.randomUUID();
         commandService.handle(submitEnvelope(orderId));
 
-        assertThat(repository.claimCreatedSubmitAttempts(
+        GatewayCommandAttemptRecord attempt = repository.claimCreatedSubmitAttempts(
                 10,
                 Instant.parse("2026-06-13T00:00:00Z"),
-                Instant.parse("2099-01-01T00:00:00Z")
-        )).hasSize(1);
+                Instant.parse("2099-01-01T00:00:00Z"),
+                "worker-a"
+        ).getFirst();
 
         assertThat(repository.findCreatedSubmitAttempts(10))
-                .noneMatch(attempt -> attempt.orderId().equals(orderId));
+                .noneMatch(candidate -> candidate.orderId().equals(orderId));
+        assertThat(repository.findAttemptAckDeadline(attempt.id())).isEmpty();
         assertThat(repository.findExpiredSubmitOutcomeAttempts(
                 Instant.parse("2026-06-13T00:00:01Z"),
                 10
-        )).noneMatch(attempt -> attempt.orderId().equals(orderId));
+        )).noneMatch(candidate -> candidate.orderId().equals(orderId));
+        assertThat(repository.findCreatedSubmitAttempts(Instant.parse("2099-01-01T00:00:01Z"), 10))
+                .filteredOn(candidate -> candidate.orderId().equals(orderId))
+                .singleElement()
+                .extracting(GatewayCommandAttemptRecord::brokerOrderId)
+                .isNull();
     }
 
     @Test
@@ -318,18 +340,104 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
         GatewayCommandAttemptRecord attempt = repository.claimCreatedSubmitAttempts(
                 10,
                 Instant.parse("2026-06-13T00:00:00Z"),
-                Instant.parse("2026-06-13T00:00:01Z")
+                Instant.parse("2026-06-13T00:00:01Z"),
+                "worker-a"
         ).getFirst();
 
         Instant sentAt = Instant.parse("2026-06-13T00:00:10Z");
         Instant ackDeadlineAt = sentAt.plusSeconds(30);
-        assertThat(repository.markAttemptSent(attempt.id(), sentAt, ackDeadlineAt)).isTrue();
+        assertThat(repository.markAttemptSent(attempt.id(), attempt.dispatchToken(), sentAt, ackDeadlineAt)).isTrue();
         assertThat(repository.findAttemptAckDeadline(attempt.id())).contains(ackDeadlineAt);
 
         dispatchScheduler.dispatchCreatedAttempts();
 
         assertThat(repository.countAttemptsByOrderIdAndState(orderId, "UNKNOWN")).isEqualTo(1);
         assertThat(repository.countParkedByErrorCode("SUBMIT_OUTCOME_UNKNOWN")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("OUT CXLQ journal이 있는 CREATED cancel attempt는 lock 만료 후 UNKNOWN과 parking으로 격리한다")
+    @Sql(statements = {
+            "DELETE FROM outbox_message",
+            "DELETE FROM broker_message_journal",
+            "DELETE FROM broker_command_attempt",
+            "DELETE FROM broker_order_binding",
+            "DELETE FROM processed_message",
+            "DELETE FROM parked_message"
+    })
+    void createdCancelAttemptWithOutboundJournalIsParkedAsUnknownAfterDispatchLockExpires() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        commandService.handle(cancelEnvelope(orderId));
+        assertThat(repository.updateBindingAccepted(
+                orderId,
+                "SIM",
+                "BRK-CANCEL-UNKNOWN-001",
+                Instant.parse("2026-06-13T00:00:00Z")
+        )).isTrue();
+        GatewayCommandAttemptRecord attempt = repository.claimDispatchableCancelAttempts(
+                10,
+                Instant.parse("2026-06-13T00:00:00Z"),
+                Instant.parse("2026-06-13T00:00:01Z"),
+                "worker-a"
+        ).getFirst();
+        assertThat(repository.insertOutboundJournalIfDispatchTokenMatches(
+                attempt.id(),
+                attempt.dispatchToken(),
+                UUID.randomUUID(),
+                attempt.brokerCode(),
+                BrokerMessageId.CXLQ.code(),
+                attempt.wireMessageId(),
+                attempt.traceId(),
+                attempt.brokerOrderId(),
+                orderId,
+                "cxlq".getBytes(StandardCharsets.US_ASCII),
+                objectMapper.createObjectNode().put("brokerOrderId", attempt.brokerOrderId()),
+                Instant.parse("2026-06-13T00:00:00.500Z")
+        )).isTrue();
+
+        dispatchScheduler.dispatchCreatedAttempts();
+
+        assertThat(repository.countAttemptsByOrderIdTypeAndState(orderId, "CANCEL", "UNKNOWN")).isEqualTo(1);
+        assertThat(repository.countParkedByErrorCode("CANCEL_OUTCOME_UNKNOWN")).isEqualTo(1);
+        BROKER_SERVER.assertNoMessage(Duration.ofMillis(300));
+    }
+
+    @Test
+    @DisplayName("SENT cancel attempt는 ack deadline 만료 시 UNKNOWN과 parking으로 격리된다")
+    @Sql(statements = {
+            "DELETE FROM outbox_message",
+            "DELETE FROM broker_message_journal",
+            "DELETE FROM broker_command_attempt",
+            "DELETE FROM broker_order_binding",
+            "DELETE FROM processed_message",
+            "DELETE FROM parked_message"
+    })
+    void sentCancelAttemptAckDeadlineExpiresAsUnknown() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        commandService.handle(cancelEnvelope(orderId));
+        assertThat(repository.updateBindingAccepted(
+                orderId,
+                "SIM",
+                "BRK-CANCEL-UNKNOWN-002",
+                Instant.parse("2026-06-13T00:00:00Z")
+        )).isTrue();
+        GatewayCommandAttemptRecord attempt = repository.claimDispatchableCancelAttempts(
+                10,
+                Instant.parse("2026-06-13T00:00:00Z"),
+                Instant.parse("2026-06-13T00:00:01Z"),
+                "worker-a"
+        ).getFirst();
+
+        Instant sentAt = Instant.parse("2026-06-13T00:00:10Z");
+        Instant ackDeadlineAt = sentAt.plusSeconds(30);
+        assertThat(repository.markAttemptSent(attempt.id(), attempt.dispatchToken(), sentAt, ackDeadlineAt)).isTrue();
+        assertThat(repository.findAttemptAckDeadline(attempt.id())).contains(ackDeadlineAt);
+
+        dispatchScheduler.dispatchCreatedAttempts();
+
+        assertThat(repository.countAttemptsByOrderIdTypeAndState(orderId, "CANCEL", "UNKNOWN")).isEqualTo(1);
+        assertThat(repository.countParkedByErrorCode("CANCEL_OUTCOME_UNKNOWN")).isEqualTo(1);
+        BROKER_SERVER.assertNoMessage(Duration.ofMillis(300));
     }
 
     private void awaitCreatedAttempt(UUID orderId) throws InterruptedException {
@@ -483,6 +591,17 @@ class BrokerGatewayCommandDispatchIntegrationTest extends GatewayMySqlTestContai
                 throw error;
             }
             throw new AssertionError("Broker frame not received by fake broker");
+        }
+
+        void assertNoMessage(Duration timeout) throws Exception {
+            BrokerMessage message = receivedMessages.poll(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            if (message != null) {
+                throw new AssertionError("Unexpected broker frame received: " + message);
+            }
+            Exception error = failure.get();
+            if (error != null) {
+                throw error;
+            }
         }
 
         private void run() {

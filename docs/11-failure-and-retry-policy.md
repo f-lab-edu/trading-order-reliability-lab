@@ -95,13 +95,24 @@ Recovery Service는 Gateway report로 attempt 메타데이터를 기록하지만
 
 특히 브로커 command는 이미 외부 브로커에 도달했을 수 있으므로, timeout만 보고 같은 command를 즉시 재전송하면 중복 주문이나 잘못된 취소가 발생할 수 있다.
 
-Broker Gateway의 command attempt에서 `ack_deadline_at`은 command type과 전송 단계에 따라 다르게 해석된다.
+Broker Gateway의 command attempt에서는 dispatch worker lease와 broker response deadline을 분리한다.
 
-* submit `CREATED` attempt에서는 dispatch fence 역할을 한다. 현재 구현은 claim 이후 deadline이 지나면 보수적으로 submit 결과 불확실로 보고 `UNKNOWN`/reconciliation 경로로 보낸다.
-* cancel `CREATED` attempt에서는 accepted binding 이후 dispatcher claim lease 역할을 한다. 프로세스가 `CXLQ` OUT journal 기록 전에 중단되면 deadline 이후 다시 dispatch 후보로 조회할 수 있다. OUT `CXLQ` journal이 이미 있으면 TCP 송신 성공 여부가 불확실하므로 같은 `wireMessageId`를 직접 재송신하지 않는다.
-* `SENT` attempt에서는 broker 응답 deadline 역할을 한다. 이 deadline 이후에는 같은 command를 직접 재전송하지 않고 `UNKNOWN`/reconciliation 경로로 수렴한다.
+* `dispatch_token`은 한 번의 dispatch claim을 식별하는 fencing token이다. worker는 claim으로 받은 token이 아직 DB row에 남아 있을 때만 `SENT` 또는 `FAILED`로 갱신할 수 있다.
+* `dispatch_owner`는 claim한 Gateway worker/instance를 운영 추적하기 위한 값이다.
+* `dispatch_locked_until`은 `CREATED` attempt의 dispatch claim lease다. lease가 만료되면 다른 worker가 같은 attempt를 새 token으로 재claim할 수 있다. lease timeout은 broker 응답 timeout과 별도 설정인 `gateway.broker.command-dispatch-lock-timeout-ms`로 조정한다.
+* `ack_deadline_at`은 `SENT` 이후 broker 응답 deadline이다. `CREATED` 상태의 worker lease 판단에는 사용하지 않는다.
 
-M5 cancel 기본 흐름에서 `CANCEL` response는 송신된 `SENT` attempt 또는 dispatch claim이 잡힌 `CREATED` attempt에만 매칭된다. `CXLQ`가 `SENT` 된 뒤 `CXLA`/`CXLR`이 오지 않는 경우의 `PENDING_CANCEL -> UNKNOWN` 처리는 M8 범위다.
+submit `CREATED` attempt에서 worker가 claim 후 OUT `ORDR` journal을 남기기 전에 중단되면 `dispatch_locked_until` 만료 후 재claim할 수 있다. OUT `ORDR` journal이 이미 남아 있으면 TCP 송신 성공 여부가 불확실하므로 같은 `wireMessageId`를 직접 재송신하지 않고 submit 결과 불확실로 보고 Gateway attempt를 `UNKNOWN`/parking으로 격리한다. canonical unknown event 발행과 Order Service의 `UNKNOWN` 상태 수렴은 M7 범위다.
+
+OUT journal insert는 현재 `dispatch_token`이 일치하고 `dispatch_locked_until`이 남아 있을 때만 성공한다. OUT journal 기록 직후에도 TCP send 직전 token-current 상태를 다시 확인해, timeout sweeper나 다른 회수 경로가 token을 정리한 경우 외부 송신을 중단한다. 다만 DB row 변경과 외부 TCP write는 원자화할 수 없으므로, OUT journal 이후의 불확실성은 직접 재송신이 아니라 `wireMessageId` 기반 멱등성, `UNKNOWN`, reconciliation 경로로 다룬다.
+
+M5.5에서는 `broker_message_journal`에 OUT 전용 unique 제약을 추가한다. 현재 dispatcher 실행 모델은 claim된 attempt 하나가 token 조건부 `INSERT ... SELECT`와 동일 `wireMessageId` `NOT EXISTS` 조건을 통과해야만 OUT journal을 만들 수 있고, DB unique key `(broker_code, out_msg_id, out_wire_message_id)`가 같은 broker/msg/wire OUT journal 중복 저장을 최후 방어선으로 거절한다. IN journal은 중복 수신과 재처리 분석을 위해 같은 `wireMessageId` 이력을 여러 건 남길 수 있다.
+
+cancel `CREATED` attempt에서도 accepted binding 이후 `dispatch_locked_until`이 worker claim lease 역할을 한다. 프로세스가 `CXLQ` OUT journal 기록 전에 중단되면 lock 만료 후 다시 dispatch 후보로 조회할 수 있다. OUT `CXLQ` journal이 이미 있으면 TCP 송신 성공 여부가 불확실하므로 같은 `wireMessageId`를 직접 재송신하지 않고 cancel 결과 불확실로 보고 Gateway attempt를 `UNKNOWN`/parking으로 격리한다.
+
+`SENT` attempt에서는 `ack_deadline_at`이 broker 응답 deadline이다. 이 deadline 이후에는 같은 command를 직접 재전송하지 않고 `UNKNOWN`/reconciliation 경로로 수렴한다.
+
+M5.5 이후 broker response는 송신된 `SENT` attempt 또는 dispatch claim이 잡힌 `CREATED` attempt에만 매칭된다. `CXLQ`가 `SENT` 된 뒤 `CXLA`/`CXLR`이 오지 않는 경우 Gateway attempt는 `UNKNOWN`/parking으로 격리한다. canonical unknown event 발행과 Order Service의 `PENDING_CANCEL -> UNKNOWN` 상태 수렴은 M8 범위다.
 
 | 대상                  |     자동 재시도 여부 | 기준                                                     |
 | ------------------- | ------------: | ------------------------------------------------------ |
@@ -327,6 +338,8 @@ DLQ 구체 정책은 11장에서 완전히 확정하지 않고, 12장 운영/모
 
 ## 11.7.3 submit 결과 불확실
 
+이 절의 canonical event와 Order Service 상태 전환은 M7 목표 정책이다. M5.5에서는 Gateway 내부 command attempt를 `UNKNOWN`/parking으로 격리하고 직접 재송신을 막는 단계까지 구현한다.
+
 상황:
 
 * `ORDR` 전송 후 `ACKN` 또는 `RJCT` 미수신
@@ -335,8 +348,8 @@ DLQ 구체 정책은 11장에서 완전히 확정하지 않고, 12장 운영/모
 
 Gateway 처리:
 
-1. command attempt를 `TIMED_OUT` 또는 `UNKNOWN`으로 기록
-2. `BrokerCommandOutcomeUnknown(commandType=SUBMIT)` 발행
+1. M5.5 기준 command attempt를 `UNKNOWN`으로 기록하고 `SUBMIT_OUTCOME_UNKNOWN`으로 parking
+2. M7에서 `BrokerCommandOutcomeUnknown(commandType=SUBMIT)` 발행
 
 Order Service 처리:
 
@@ -348,6 +361,8 @@ Order Service 처리:
 
 ## 11.7.4 cancel 결과 불확실
 
+이 절의 canonical event와 Order Service 상태 전환은 M8 목표 정책이다. M5.5에서는 Gateway 내부 command attempt를 `UNKNOWN`/parking으로 격리하고 직접 재송신을 막는 단계까지 구현한다.
+
 상황:
 
 * `CXLQ` 전송 후 `CXLA` 또는 `CXLR` 미수신
@@ -356,8 +371,8 @@ Order Service 처리:
 
 Gateway 처리:
 
-1. command attempt를 `TIMED_OUT` 또는 `UNKNOWN`으로 기록
-2. `BrokerCommandOutcomeUnknown(commandType=CANCEL)` 발행
+1. M5.5 기준 command attempt를 `UNKNOWN`으로 기록하고 `CANCEL_OUTCOME_UNKNOWN`으로 parking
+2. M8에서 `BrokerCommandOutcomeUnknown(commandType=CANCEL)` 발행
 
 Order Service 처리:
 

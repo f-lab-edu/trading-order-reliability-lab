@@ -7,6 +7,7 @@ import com.trading.orderreliability.gateway.persistence.GatewayJdbcRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +24,7 @@ public class BrokerCommandDispatchScheduler {
     private final GatewayJdbcRepository repository;
     private final GatewayBrokerProperties properties;
     private final BrokerCommandDispatcher dispatcher;
+    private final String dispatchOwner = "broker-gateway-dispatcher-" + UUID.randomUUID();
     private final Clock clock = Clock.systemUTC();
 
     public BrokerCommandDispatchScheduler(
@@ -40,13 +42,21 @@ public class BrokerCommandDispatchScheduler {
             initialDelayString = "${gateway.broker.command-dispatch-initial-delay-ms:0}"
     )
     public void dispatchCreatedAttempts() {
+        // Keep cancel before submit so an ACK received during this scheduler pass
+        // does not make a pending cancel eligible until the next pass.
+        parkExpiredCancelOutcomes();
         parkExpiredSubmitOutcomes();
         dispatchCreatedCancelAttempts();
+        dispatchCreatedSubmitAttempts();
+    }
+
+    private void dispatchCreatedSubmitAttempts() {
         Instant now = clock.instant();
         List<GatewayCommandAttemptRecord> attempts = repository.claimCreatedSubmitAttempts(
                 properties.getCommandDispatchBatchSize(),
                 now,
-                now.plusMillis(properties.getCommandAckTimeoutMs())
+                now.plusMillis(properties.getCommandDispatchLockTimeoutMs()),
+                dispatchOwner
         );
         for (GatewayCommandAttemptRecord attempt : attempts) {
             try {
@@ -66,7 +76,8 @@ public class BrokerCommandDispatchScheduler {
         List<GatewayCommandAttemptRecord> attempts = repository.claimDispatchableCancelAttempts(
                 properties.getCommandDispatchBatchSize(),
                 now,
-                now.plusMillis(properties.getCommandAckTimeoutMs())
+                now.plusMillis(properties.getCommandDispatchLockTimeoutMs()),
+                dispatchOwner
         );
         for (GatewayCommandAttemptRecord attempt : attempts) {
             try {
@@ -77,6 +88,28 @@ public class BrokerCommandDispatchScheduler {
                         attempt.orderId(),
                         attempt.wireMessageId(),
                         e);
+            }
+        }
+    }
+
+    private void parkExpiredCancelOutcomes() {
+        Instant now = clock.instant();
+        List<GatewayCommandAttemptRecord> attempts = repository.findExpiredCancelOutcomeAttempts(
+                now,
+                properties.getCommandDispatchBatchSize()
+        );
+        for (GatewayCommandAttemptRecord attempt : attempts) {
+            String message = "Broker cancel command outcome is unknown; reconciliation is deferred to a later recovery flow";
+            if (repository.markAttemptUnknown(attempt.id(), "CANCEL_OUTCOME_UNKNOWN", message, now)) {
+                repository.parkRawMessage(
+                        java.util.UUID.randomUUID(),
+                        "broker-command-attempt",
+                        "broker-gateway-command-dispatcher",
+                        attempt.payloadJson(),
+                        "CANCEL_OUTCOME_UNKNOWN",
+                        message,
+                        now
+                );
             }
         }
     }

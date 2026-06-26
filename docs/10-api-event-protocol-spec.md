@@ -573,6 +573,8 @@ Order Service는 `brokerEventDedupKey`를 opaque value로 취급한다.
 
 > Broker Gateway가 브로커 command를 보냈지만, 해당 command의 업무 결과를 확정할 수 없을 때 Order Service에 전달하는 canonical broker event.
 
+M5.5에서는 이 event contract를 변경하지 않는다. M5.5 구현 범위는 Broker Gateway 내부 `broker_command_attempt`의 dispatch fencing과 Gateway attempt `UNKNOWN`/parking까지이며, `BrokerCommandOutcomeUnknown` 실제 발행과 Order Service `UNKNOWN` 상태 수렴은 M7/M8 구현 범위다.
+
 ### 발생 예시
 
 | 상황                                         | 발행 여부                     |
@@ -955,6 +957,8 @@ Gateway
        or CANCEL_OUTCOME_UNKNOWN
      )
 ```
+
+M5.5 기준 구현은 pending command 결과 불확실성을 Gateway 내부 attempt `UNKNOWN`/parking으로 격리하는 단계까지다. 위 canonical event 발행과 Order Service 상태 전환은 M7/M8에서 활성화한다.
 
 ## 10.13.2 식별 불가능 malformed
 

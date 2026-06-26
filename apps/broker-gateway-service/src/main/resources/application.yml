@@ -34,5 +34,6 @@ gateway:
     port: 9093
     command-dispatch-enabled: false
     command-dispatch-poll-delay-ms: 250
+    command-dispatch-lock-timeout-ms: 5000
     command-ack-timeout-ms: 30000
     command-dispatch-batch-size: 25

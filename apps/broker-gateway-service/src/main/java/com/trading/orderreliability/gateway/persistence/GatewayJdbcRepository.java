@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -142,18 +143,33 @@ public class GatewayJdbcRepository {
 
     @Transactional(readOnly = true)
     public List<GatewayCommandAttemptRecord> findCreatedSubmitAttempts(int limit) {
+        return findCreatedSubmitAttempts(Instant.now(), limit);
+    }
+
+    @Transactional(readOnly = true)
+    public List<GatewayCommandAttemptRecord> findCreatedSubmitAttempts(Instant now, int limit) {
         return jdbcTemplate.query(
                 """
                         SELECT id, source_message_id, order_id, command_type, broker_code, wire_message_id,
-                               trace_id, broker_order_id, payload_json, created_at
+                               trace_id, broker_order_id, payload_json, dispatch_token, dispatch_owner,
+                               dispatch_locked_until, created_at
                         FROM broker_command_attempt
                         WHERE command_type = 'SUBMIT'
                           AND transport_state = 'CREATED'
-                          AND ack_deadline_at IS NULL
+                          AND (dispatch_locked_until IS NULL OR dispatch_locked_until <= ?)
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM broker_message_journal j
+                              WHERE j.broker_code = broker_command_attempt.broker_code
+                                AND j.wire_message_id = broker_command_attempt.wire_message_id
+                                AND j.direction = 'OUT'
+                                AND j.msg_id = 'ORDR'
+                          )
                         ORDER BY created_at
                         LIMIT ?
                         """,
                 (rs, rowNum) -> toAttempt(rs),
+                now,
                 limit
         );
     }
@@ -168,14 +184,15 @@ public class GatewayJdbcRepository {
         return jdbcTemplate.query(
                 """
                         SELECT a.id, a.source_message_id, a.order_id, a.command_type, a.broker_code, a.wire_message_id,
-                               a.trace_id, b.broker_order_id, a.payload_json, a.created_at
+                               a.trace_id, b.broker_order_id, a.payload_json, a.dispatch_token, a.dispatch_owner,
+                               a.dispatch_locked_until, a.created_at
                         FROM broker_command_attempt a
                         JOIN broker_order_binding b
                           ON b.order_id = a.order_id
                          AND b.broker_code = a.broker_code
                         WHERE a.command_type = 'CANCEL'
                           AND a.transport_state = 'CREATED'
-                          AND (a.ack_deadline_at IS NULL OR a.ack_deadline_at <= ?)
+                          AND (a.dispatch_locked_until IS NULL OR a.dispatch_locked_until <= ?)
                           AND b.broker_order_id IS NOT NULL
                           AND b.accepted_at IS NOT NULL
                           AND NOT EXISTS (
@@ -199,23 +216,44 @@ public class GatewayJdbcRepository {
     public List<GatewayCommandAttemptRecord> claimCreatedSubmitAttempts(
             int limit,
             Instant claimedAt,
-            Instant ackDeadlineAt
+            Instant dispatchLockedUntil,
+            String dispatchOwner
     ) {
-        List<GatewayCommandAttemptRecord> records = findCreatedSubmitAttempts(limit);
+        List<GatewayCommandAttemptRecord> records = findCreatedSubmitAttempts(claimedAt, limit);
         return records.stream()
-                .filter(record -> jdbcTemplate.update(
-                        """
-                                UPDATE broker_command_attempt
-                                SET ack_deadline_at = ?,
-                                    updated_at = ?
-                                WHERE id = ?
-                                  AND transport_state = 'CREATED'
-                                  AND ack_deadline_at IS NULL
-                                """,
-                        ackDeadlineAt,
-                        claimedAt,
-                        UuidBytes.toBytes(record.id())
-                ) == 1)
+                .map(record -> {
+                    String dispatchToken = UUID.randomUUID().toString();
+                    int updated = jdbcTemplate.update(
+                            """
+                                    UPDATE broker_command_attempt
+                                    SET dispatch_token = ?,
+                                        dispatch_owner = ?,
+                                        dispatch_locked_until = ?,
+                                        updated_at = ?
+                                    WHERE id = ?
+                                      AND transport_state = 'CREATED'
+                                      AND (dispatch_locked_until IS NULL OR dispatch_locked_until <= ?)
+                                      AND NOT EXISTS (
+                                          SELECT 1
+                                          FROM broker_message_journal j
+                                          WHERE j.broker_code = broker_command_attempt.broker_code
+                                            AND j.wire_message_id = broker_command_attempt.wire_message_id
+                                            AND j.direction = 'OUT'
+                                            AND j.msg_id = 'ORDR'
+                                      )
+                                    """,
+                            dispatchToken,
+                            dispatchOwner,
+                            dispatchLockedUntil,
+                            claimedAt,
+                            UuidBytes.toBytes(record.id()),
+                            claimedAt
+                    );
+                    return updated == 1
+                            ? record.withDispatchLock(dispatchToken, dispatchOwner, dispatchLockedUntil)
+                            : null;
+                })
+                .filter(java.util.Objects::nonNull)
                 .toList();
     }
 
@@ -223,27 +261,47 @@ public class GatewayJdbcRepository {
     public List<GatewayCommandAttemptRecord> claimDispatchableCancelAttempts(
             int limit,
             Instant claimedAt,
-            Instant ackDeadlineAt
+            Instant dispatchLockedUntil,
+            String dispatchOwner
     ) {
         List<GatewayCommandAttemptRecord> records = findDispatchableCancelAttempts(claimedAt, limit);
         return records.stream()
-                .filter(record -> jdbcTemplate.update(
-                        """
-                                UPDATE broker_command_attempt
-                                SET ack_deadline_at = ?,
-                                    broker_order_id = ?,
-                                    updated_at = ?
-                                WHERE id = ?
-                                  AND command_type = 'CANCEL'
-                                  AND transport_state = 'CREATED'
-                                  AND (ack_deadline_at IS NULL OR ack_deadline_at <= ?)
-                                """,
-                        ackDeadlineAt,
-                        record.brokerOrderId(),
-                        claimedAt,
-                        UuidBytes.toBytes(record.id()),
-                        claimedAt
-                ) == 1)
+                .map(record -> {
+                    String dispatchToken = UUID.randomUUID().toString();
+                    int updated = jdbcTemplate.update(
+                            """
+                                    UPDATE broker_command_attempt
+                                    SET dispatch_token = ?,
+                                        dispatch_owner = ?,
+                                        dispatch_locked_until = ?,
+                                        broker_order_id = ?,
+                                        updated_at = ?
+                                    WHERE id = ?
+                                      AND command_type = 'CANCEL'
+                                      AND transport_state = 'CREATED'
+                                      AND (dispatch_locked_until IS NULL OR dispatch_locked_until <= ?)
+                                      AND NOT EXISTS (
+                                          SELECT 1
+                                          FROM broker_message_journal j
+                                          WHERE j.broker_code = broker_command_attempt.broker_code
+                                            AND j.wire_message_id = broker_command_attempt.wire_message_id
+                                            AND j.direction = 'OUT'
+                                            AND j.msg_id = 'CXLQ'
+                                      )
+                                    """,
+                            dispatchToken,
+                            dispatchOwner,
+                            dispatchLockedUntil,
+                            record.brokerOrderId(),
+                            claimedAt,
+                            UuidBytes.toBytes(record.id()),
+                            claimedAt
+                    );
+                    return updated == 1
+                            ? record.withDispatchLock(dispatchToken, dispatchOwner, dispatchLockedUntil)
+                            : null;
+                })
+                .filter(java.util.Objects::nonNull)
                 .toList();
     }
 
@@ -252,38 +310,94 @@ public class GatewayJdbcRepository {
         return jdbcTemplate.query(
                 """
                         SELECT id, source_message_id, order_id, command_type, broker_code, wire_message_id,
-                               trace_id, broker_order_id, payload_json, created_at
+                               trace_id, broker_order_id, payload_json, dispatch_token, dispatch_owner,
+                               dispatch_locked_until, created_at
                         FROM broker_command_attempt
                         WHERE command_type = 'SUBMIT'
-                          AND transport_state IN ('CREATED', 'SENT')
-                          AND ack_deadline_at IS NOT NULL
-                          AND ack_deadline_at <= ?
-                        ORDER BY ack_deadline_at
+                          AND (
+                              (transport_state = 'SENT'
+                                  AND ack_deadline_at IS NOT NULL
+                                  AND ack_deadline_at <= ?)
+                              OR
+                              (transport_state = 'CREATED'
+                                  AND dispatch_locked_until IS NOT NULL
+                                  AND dispatch_locked_until <= ?
+                                  AND EXISTS (
+                                      SELECT 1
+                                      FROM broker_message_journal j
+                                      WHERE j.broker_code = broker_command_attempt.broker_code
+                                        AND j.wire_message_id = broker_command_attempt.wire_message_id
+                                        AND j.direction = 'OUT'
+                                        AND j.msg_id = 'ORDR'
+                                  ))
+                          )
+                        ORDER BY COALESCE(ack_deadline_at, dispatch_locked_until)
                         LIMIT ?
                         """,
                 (rs, rowNum) -> toAttempt(rs),
+                now,
+                now,
+                limit
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public List<GatewayCommandAttemptRecord> findExpiredCancelOutcomeAttempts(Instant now, int limit) {
+        return jdbcTemplate.query(
+                """
+                        SELECT id, source_message_id, order_id, command_type, broker_code, wire_message_id,
+                               trace_id, broker_order_id, payload_json, dispatch_token, dispatch_owner,
+                               dispatch_locked_until, created_at
+                        FROM broker_command_attempt
+                        WHERE command_type = 'CANCEL'
+                          AND (
+                              (transport_state = 'SENT'
+                                  AND ack_deadline_at IS NOT NULL
+                                  AND ack_deadline_at <= ?)
+                              OR
+                              (transport_state = 'CREATED'
+                                  AND dispatch_locked_until IS NOT NULL
+                                  AND dispatch_locked_until <= ?
+                                  AND EXISTS (
+                                      SELECT 1
+                                      FROM broker_message_journal j
+                                      WHERE j.broker_code = broker_command_attempt.broker_code
+                                        AND j.wire_message_id = broker_command_attempt.wire_message_id
+                                        AND j.direction = 'OUT'
+                                        AND j.msg_id = 'CXLQ'
+                                  ))
+                          )
+                        ORDER BY COALESCE(ack_deadline_at, dispatch_locked_until)
+                        LIMIT ?
+                        """,
+                (rs, rowNum) -> toAttempt(rs),
+                now,
                 now,
                 limit
         );
     }
 
     @Transactional
-    public boolean markAttemptSent(UUID attemptId, Instant sentAt, Instant ackDeadlineAt) {
+    public boolean markAttemptSent(UUID attemptId, String dispatchToken, Instant sentAt, Instant ackDeadlineAt) {
         return jdbcTemplate.update(
                 """
                         UPDATE broker_command_attempt
                         SET transport_state = 'SENT',
                             sent_at = ?,
                             ack_deadline_at = ?,
+                            dispatch_token = NULL,
+                            dispatch_owner = NULL,
+                            dispatch_locked_until = NULL,
                             updated_at = ?
                         WHERE id = ?
                           AND transport_state = 'CREATED'
-                          AND ack_deadline_at IS NOT NULL
+                          AND dispatch_token = ?
                         """,
                 sentAt,
                 ackDeadlineAt,
                 sentAt,
-                UuidBytes.toBytes(attemptId)
+                UuidBytes.toBytes(attemptId),
+                dispatchToken
         ) == 1;
     }
 
@@ -317,24 +431,35 @@ public class GatewayJdbcRepository {
     }
 
     @Transactional
-    public void markAttemptFailed(UUID attemptId, String errorCode, String errorMessage, Instant failedAt) {
-        jdbcTemplate.update(
+    public boolean markAttemptFailed(
+            UUID attemptId,
+            String dispatchToken,
+            String errorCode,
+            String errorMessage,
+            Instant failedAt
+    ) {
+        return jdbcTemplate.update(
                 """
                         UPDATE broker_command_attempt
                         SET transport_state = 'FAILED',
                             error_code = ?,
                             error_message = ?,
                             completed_at = ?,
+                            dispatch_token = NULL,
+                            dispatch_owner = NULL,
+                            dispatch_locked_until = NULL,
                             updated_at = ?
                         WHERE id = ?
                           AND transport_state = 'CREATED'
+                          AND dispatch_token = ?
                         """,
                 errorCode,
                 truncate(errorMessage),
                 failedAt,
                 failedAt,
-                UuidBytes.toBytes(attemptId)
-        );
+                UuidBytes.toBytes(attemptId),
+                dispatchToken
+        ) == 1;
     }
 
     @Transactional
@@ -345,10 +470,16 @@ public class GatewayJdbcRepository {
                         SET transport_state = 'ACKED',
                             broker_order_id = ?,
                             completed_at = ?,
+                            dispatch_token = NULL,
+                            dispatch_owner = NULL,
+                            dispatch_locked_until = NULL,
                             updated_at = ?
                         WHERE broker_code = ?
                           AND wire_message_id = ?
-                          AND transport_state IN ('CREATED', 'SENT')
+                          AND (
+                              transport_state = 'SENT'
+                              OR (transport_state = 'CREATED' AND dispatch_token IS NOT NULL)
+                          )
                         """,
                 blankToNull(brokerOrderId),
                 completedAt,
@@ -373,6 +504,9 @@ public class GatewayJdbcRepository {
                             error_code = ?,
                             error_message = ?,
                             completed_at = ?,
+                            dispatch_token = NULL,
+                            dispatch_owner = NULL,
+                            dispatch_locked_until = NULL,
                             updated_at = ?
                         WHERE order_id = ?
                           AND broker_code = ?
@@ -396,6 +530,9 @@ public class GatewayJdbcRepository {
                         SET transport_state = 'UNKNOWN',
                             error_code = ?,
                             error_message = ?,
+                            dispatch_token = NULL,
+                            dispatch_owner = NULL,
+                            dispatch_locked_until = NULL,
                             updated_at = ?
                         WHERE id = ?
                           AND transport_state IN ('CREATED', 'SENT')
@@ -458,12 +595,18 @@ public class GatewayJdbcRepository {
                             a.transport_state = 'ACKED',
                             a.broker_order_id = ?,
                             a.completed_at = ?,
+                            a.dispatch_token = NULL,
+                            a.dispatch_owner = NULL,
+                            a.dispatch_locked_until = NULL,
                             a.updated_at = ?
                         WHERE b.order_id = ?
                           AND b.broker_code = ?
                           AND a.wire_message_id = ?
                           AND a.command_type = 'SUBMIT'
-                          AND a.transport_state IN ('CREATED', 'SENT')
+                          AND (
+                              a.transport_state = 'SENT'
+                              OR (a.transport_state = 'CREATED' AND a.dispatch_token IS NOT NULL)
+                          )
                           AND (b.broker_order_id IS NULL OR b.broker_order_id = ?)
                         """,
                 brokerOrderId,
@@ -503,7 +646,9 @@ public class GatewayJdbcRepository {
                 """
                         SELECT CASE
                             WHEN transport_state = 'ACKED' THEN 'ACKED'
-                            WHEN transport_state IN ('CREATED', 'SENT') THEN 'ELIGIBLE'
+                            WHEN transport_state = 'SENT'
+                                OR (transport_state = 'CREATED' AND dispatch_token IS NOT NULL)
+                                THEN 'ELIGIBLE'
                             ELSE 'INELIGIBLE'
                         END AS response_state
                         FROM broker_command_attempt
@@ -534,7 +679,7 @@ public class GatewayJdbcRepository {
                           AND command_type = 'CANCEL'
                           AND (
                               transport_state = 'SENT'
-                              OR (transport_state = 'CREATED' AND ack_deadline_at IS NOT NULL)
+                              OR (transport_state = 'CREATED' AND dispatch_token IS NOT NULL)
                           )
                         """,
                 Integer.class,
@@ -552,7 +697,7 @@ public class GatewayJdbcRepository {
                         SELECT CASE
                             WHEN transport_state = 'ACKED' THEN 'ACKED'
                             WHEN transport_state = 'SENT'
-                                OR (transport_state = 'CREATED' AND ack_deadline_at IS NOT NULL)
+                                OR (transport_state = 'CREATED' AND dispatch_token IS NOT NULL)
                                 THEN 'ELIGIBLE'
                             ELSE 'INELIGIBLE'
                         END AS response_state
@@ -590,7 +735,121 @@ public class GatewayJdbcRepository {
     }
 
     @Transactional
-    public void insertJournal(
+    public boolean insertOutboundJournalIfDispatchTokenMatches(
+            UUID attemptId,
+            String dispatchToken,
+            UUID journalId,
+            String brokerCode,
+            String msgId,
+            String wireMessageId,
+            String traceId,
+            String brokerOrderId,
+            UUID orderId,
+            byte[] rawMessage,
+            Object parsedPayload,
+            Instant recordedAt
+    ) {
+        try {
+            return jdbcTemplate.update(
+                    """
+                            INSERT INTO broker_message_journal (
+                                id, broker_code, direction, msg_id, wire_message_id, trace_id, broker_order_id,
+                                order_id, parse_status, error_code, error_message, raw_message, parsed_payload_json,
+                                payload_hash, recorded_at
+                            )
+                            SELECT ?, ?, 'OUT', ?, ?, ?, ?, ?, 'PARSED', NULL, NULL, ?, ?, NULL, ?
+                            FROM broker_command_attempt a
+                            WHERE a.id = ?
+                              AND a.transport_state = 'CREATED'
+                              AND a.dispatch_token = ?
+                              AND a.dispatch_locked_until > ?
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM broker_message_journal j
+                                  WHERE j.broker_code = ?
+                                    AND j.direction = 'OUT'
+                                    AND j.msg_id = ?
+                                    AND j.wire_message_id = ?
+                              )
+                            """,
+                    UuidBytes.toBytes(journalId),
+                    brokerCode,
+                    msgId,
+                    wireMessageId,
+                    traceId,
+                    brokerOrderId,
+                    UuidBytes.toBytes(orderId),
+                    Base64.getEncoder().encodeToString(rawMessage),
+                    writeJson(parsedPayload),
+                    recordedAt,
+                    UuidBytes.toBytes(attemptId),
+                    dispatchToken,
+                    recordedAt,
+                    brokerCode,
+                    msgId,
+                    wireMessageId
+            ) == 1;
+        } catch (DuplicateKeyException e) {
+            return false;
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public boolean dispatchTokenIsCurrent(UUID attemptId, String dispatchToken, Instant checkedAt) {
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM broker_command_attempt
+                        WHERE id = ?
+                          AND transport_state = 'CREATED'
+                          AND dispatch_token = ?
+                          AND dispatch_locked_until > ?
+                        """,
+                Integer.class,
+                UuidBytes.toBytes(attemptId),
+                dispatchToken,
+                checkedAt
+        );
+        return count != null && count == 1;
+    }
+
+    @Transactional
+    public void insertInboundJournal(
+            UUID journalId,
+            String brokerCode,
+            String msgId,
+            String wireMessageId,
+            String traceId,
+            String brokerOrderId,
+            UUID orderId,
+            String parseStatus,
+            String errorCode,
+            String errorMessage,
+            byte[] rawMessage,
+            Object parsedPayload,
+            String payloadHash,
+            Instant recordedAt
+    ) {
+        insertJournal(
+                journalId,
+                brokerCode,
+                "IN",
+                msgId,
+                wireMessageId,
+                traceId,
+                brokerOrderId,
+                orderId,
+                parseStatus,
+                errorCode,
+                errorMessage,
+                rawMessage,
+                parsedPayload,
+                payloadHash,
+                recordedAt
+        );
+    }
+
+    private void insertJournal(
             UUID journalId,
             String brokerCode,
             String direction,
@@ -933,6 +1192,9 @@ public class GatewayJdbcRepository {
                 rs.getString("trace_id"),
                 rs.getString("broker_order_id"),
                 rs.getString("payload_json"),
+                rs.getString("dispatch_token"),
+                rs.getString("dispatch_owner"),
+                toInstant(rs.getTimestamp("dispatch_locked_until")),
                 rs.getTimestamp("created_at").toInstant()
         );
     }

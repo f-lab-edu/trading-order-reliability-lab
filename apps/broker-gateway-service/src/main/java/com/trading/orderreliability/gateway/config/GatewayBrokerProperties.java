@@ -10,6 +10,7 @@ public class GatewayBrokerProperties {
     private int port = 9093;
     private boolean commandDispatchEnabled;
     private long commandDispatchPollDelayMs = 250;
+    private long commandDispatchLockTimeoutMs = 5_000;
     private long commandAckTimeoutMs = 30_000;
     private int commandDispatchBatchSize = 25;
 
@@ -51,6 +52,14 @@ public class GatewayBrokerProperties {
 
     public void setCommandDispatchPollDelayMs(long commandDispatchPollDelayMs) {
         this.commandDispatchPollDelayMs = commandDispatchPollDelayMs;
+    }
+
+    public long getCommandDispatchLockTimeoutMs() {
+        return commandDispatchLockTimeoutMs;
+    }
+
+    public void setCommandDispatchLockTimeoutMs(long commandDispatchLockTimeoutMs) {
+        this.commandDispatchLockTimeoutMs = commandDispatchLockTimeoutMs;
     }
 
     public long getCommandAckTimeoutMs() {
